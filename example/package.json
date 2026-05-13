@@ -1,0 +1,36 @@
+{
+  "name": "react-native-imei-serial-reader-example",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "android": "react-native run-android",
+    "ios": "react-native run-ios",
+    "start": "react-native start",
+    "pods": "cd ios && pod install",
+    "postinstall": "patch-package --patch-dir ../patches"
+  },
+  "dependencies": {
+    "react": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-fs": "^2.20.0",
+    "react-native-imei-serial-reader": "link:..",
+    "react-native-safe-area-context": "^5.4.0",
+    "react-native-vision-camera": "^4.7.3",
+    "react-native-vision-camera-text-recognition": "^3.1.1",
+    "react-native-worklets-core": "^1.6.3",
+    "vision-camera-resize-plugin": "^3.2.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@babel/preset-env": "^7.25.0",
+    "@babel/preset-typescript": "^7.28.5",
+    "@babel/runtime": "^7.25.0",
+    "@react-native-community/cli": "latest",
+    "@react-native/babel-preset": "^0.85.0",
+    "@react-native/metro-config": "^0.85.0",
+    "@types/react": "^19.1.0",
+    "babel-plugin-module-resolver": "^5.0.3",
+    "patch-package": "^8.0.1",
+    "typescript": "^5.3.0"
+  }
+}
