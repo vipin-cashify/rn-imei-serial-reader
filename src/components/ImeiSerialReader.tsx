@@ -1,6 +1,7 @@
 import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Camera } from 'react-native-vision-camera';
+import { CAPTURE_MODE } from '../captureMode';
 import { useImeiSerialReader } from '../hooks/useImeiSerialReader';
 import type { Frame, ParserConfig } from '../types';
 import { ReloadButton } from './ReloadButton';
@@ -23,6 +24,7 @@ export function ImeiSerialReader(props: ImeiSerialReaderProps) {
     reload,
     error,
     device,
+    format,
     hasPermission,
     frameProcessor,
   } = useImeiSerialReader({
@@ -54,27 +56,17 @@ export function ImeiSerialReader(props: ImeiSerialReaderProps) {
     );
   }
 
-  console.log(
-    `[IMEI-Reader] component render isActive=${isActive} device=${device.id} photo=${!!props.captureFrame}`,
-  );
-
   return (
     <View style={[styles.fill, props.style]}>
       <Camera
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
+        format={format}
         isActive={isActive}
-        photo={!!props.captureFrame}
+        photo={CAPTURE_MODE === 'take-photo' && !!props.captureFrame}
+        photoQualityBalance="speed"
         frameProcessor={frameProcessor}
-        onInitialized={() => console.log('[IMEI-Reader] Camera onInitialized')}
-        onStarted={() => console.log('[IMEI-Reader] Camera onStarted')}
-        onStopped={() => console.log('[IMEI-Reader] Camera onStopped')}
-        onError={(e) =>
-          console.log(
-            `[IMEI-Reader] Camera onError code=${e.code} message=${e.message} cause=${JSON.stringify(e.cause)}`,
-          )
-        }
       />
       {!props.hideReloadButton && (
         <ReloadButton

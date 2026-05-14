@@ -12,13 +12,11 @@
   "dependencies": {
     "react": "19.2.3",
     "react-native": "0.85.3",
-    "react-native-fs": "^2.20.0",
     "react-native-imei-serial-reader": "link:..",
     "react-native-safe-area-context": "^5.4.0",
     "react-native-vision-camera": "^4.7.3",
     "react-native-vision-camera-text-recognition": "^3.1.1",
-    "react-native-worklets-core": "^1.6.3",
-    "vision-camera-resize-plugin": "^3.2.0"
+    "react-native-worklets-core": "^1.6.3"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",

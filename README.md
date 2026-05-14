@@ -9,9 +9,7 @@ Port of the Flutter `imei_serial_reader` package (v2.3.2).
 yarn add react-native-imei-serial-reader \
   react-native-vision-camera \
   react-native-vision-camera-text-recognition \
-  react-native-worklets-core \
-  vision-camera-resize-plugin \
-  react-native-fs
+  react-native-worklets-core
 ```
 
 iOS:
@@ -32,6 +30,9 @@ Android — add to `AndroidManifest.xml`:
 ```xml
 <uses-permission android:name="android.permission.CAMERA" />
 ```
+
+This library bundles a native Vision Camera Frame Processor Plugin (`frameToJpeg`,
+Kotlin + Swift). It's auto-linked — no manual registration on either platform.
 
 ### Required patches for peer dependencies
 
@@ -129,12 +130,20 @@ function Scanner() {
 ## Frame capture
 
 When `captureFrame: true`, the *exact* frame that produced the OCR match is
-JPEG-encoded and written to a temp file. `onDone` receives the JPEG `Frame`
-as the second argument. No `takePhoto()` is involved — no shutter sound,
-no frame mismatch.
+JPEG-encoded natively (by the bundled `frameToJpeg` plugin) and written to a
+temp file. `onDone` receives the JPEG `Frame` as the second argument. No
+`takePhoto()` is involved — no shutter sound, no frame mismatch.
 
-Files live in `RNFS.CachesDirectoryPath/imei-serial-reader/*.jpg`. The
-consumer owns deletion.
+Files live in the platform's temp directory (`NSTemporaryDirectory()` on iOS,
+the app's cache dir on Android). The consumer owns deletion.
+
+### Capture mode switch
+
+The library has a fallback path that uses `Camera.takePhoto()` instead of the
+native plugin (useful for debugging on platforms where the plugin isn't
+installed yet). To switch, edit
+[`src/captureMode.ts`](src/captureMode.ts) and change `CAPTURE_MODE` to
+`'take-photo'`. Default is `'native-frame'`.
 
 ## Migration from Flutter
 

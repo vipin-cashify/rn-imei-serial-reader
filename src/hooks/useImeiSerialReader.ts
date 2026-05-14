@@ -2,25 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Camera,
   type CameraDevice,
+  type CameraDeviceFormat,
+  runAsync,
   runAtTargetFps,
   useCameraDevice,
+  useCameraFormat,
   useCameraPermission,
   useFrameProcessor,
 } from 'react-native-vision-camera';
 import { Worklets, useSharedValue } from 'react-native-worklets-core';
 import { useTextRecognition } from 'react-native-vision-camera-text-recognition';
+import { CAPTURE_MODE } from '../captureMode';
 import { createParser } from '../parsers';
 import { toRecognizedText } from '../adapters/mlkitAdapter';
-import { useRgbExtractor } from '../adapters/frameToRgb';
-import { encodeAndWriteJpeg } from '../adapters/encodeAndWriteJpeg';
+import { nativeFrameToJpeg } from '../adapters/nativeFrameToJpeg';
 import type { Frame, FrameOrientation, ParserConfig } from '../types';
 
 const GRACE_MS = 1000;
 const TARGET_FPS = 10;
 const TEXT_RECOGNITION_OPTIONS = { language: 'latin' } as const;
-const LOG = '[IMEI-Reader]';
-
-let frameProcessorBuildCount = 0;
+const JPEG_QUALITY = 80;
 
 export interface UseImeiSerialReaderOptions {
   parserConfig: ParserConfig;
@@ -35,6 +36,7 @@ export interface UseImeiSerialReaderReturn {
   reload: () => void;
   error: Error | null;
   device: CameraDevice | undefined;
+  format: CameraDeviceFormat | undefined;
   hasPermission: boolean;
   requestPermission: () => Promise<boolean>;
   frameProcessor: ReturnType<typeof useFrameProcessor>;
@@ -46,22 +48,27 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
   const [error, setError] = useState<Error | null>(null);
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
-
-  const renderCountRef = useRef(0);
-  renderCountRef.current += 1;
-  console.log(
-    `${LOG} render #${renderCountRef.current} hasPermission=${hasPermission} device=${device?.id ?? 'null'} isActive=${isActive} error=${error?.message ?? 'null'}`,
-  );
+  // Cap photo resolution. Only relevant when CAPTURE_MODE === 'take-photo'
+  // (default formats are 12+MP which makes takePhoto encode slowly). Harmless
+  // in 'native-frame' mode where takePhoto isn't called.
+  const format = useCameraFormat(device, [
+    { photoResolution: { width: 1920, height: 1080 } },
+    { videoResolution: { width: 1280, height: 720 } },
+  ]);
 
   const isBusy = useSharedValue<boolean>(false);
   const graceUntil = useSharedValue<number>(0);
-  const frameTick = useSharedValue<number>(0);
 
   const onDoneRef = useRef(opts.onDone);
   onDoneRef.current = opts.onDone;
   const onErrorRef = useRef(opts.onError);
   onErrorRef.current = opts.onError;
+  // Used by the takePhoto path (decision made on JS thread).
+  const captureFrameRef = useRef(!!opts.captureFrame);
+  captureFrameRef.current = !!opts.captureFrame;
 
+  // Used by the native-frame path (decision made inside the worklet, since
+  // nativeFrameToJpeg has to run while the Frame is alive).
   const captureFrameFlag = useSharedValue<boolean>(!!opts.captureFrame);
   useEffect(() => {
     captureFrameFlag.value = !!opts.captureFrame;
@@ -91,7 +98,6 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
   }, [parserResult]);
 
   useEffect(() => {
-    console.log(`${LOG} isActive effect -> ${isActive}`);
     if (isActive) {
       isBusy.value = false;
       graceUntil.value = Date.now() + GRACE_MS;
@@ -101,22 +107,32 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
   const handleMatch = useCallback(
     async (
       values: string[],
-      rgb: number[] | null,
+      path: string | null,
       width: number,
       height: number,
       orientation: FrameOrientation | null,
     ) => {
       try {
         let frame: Frame | undefined;
-        if (rgb != null && rgb.length > 0 && width > 0 && height > 0 && orientation != null) {
-          let sum = 0;
-          for (let i = 0; i < 12 && i < rgb.length; i++) sum += rgb[i] as number;
-          console.log(
-            `${LOG} handleMatch on JS thread rgb len=${rgb.length} first12sum=${sum} ${width}x${height} ${orientation}`,
-          );
-          const bytes = Uint8Array.from(rgb);
-          const path = await encodeAndWriteJpeg({ rgb: bytes, width, height });
-          frame = { uri: `file://${path}`, width, height, orientation };
+        if (CAPTURE_MODE === 'native-frame') {
+          // Worklet already wrote the JPEG and gave us its path. No async work.
+          if (path != null && orientation != null) {
+            frame = { uri: `file://${path}`, width, height, orientation };
+          }
+        } else {
+          // CAPTURE_MODE === 'take-photo'
+          if (captureFrameRef.current && cameraRef.current != null) {
+            const photo = await cameraRef.current.takePhoto({
+              enableShutterSound: false,
+              flash: 'off',
+            });
+            frame = {
+              uri: `file://${photo.path}`,
+              width: photo.width,
+              height: photo.height,
+              orientation: photo.orientation as FrameOrientation,
+            };
+          }
         }
         onDoneRef.current(values, frame);
       } catch (e) {
@@ -139,62 +155,42 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
   const reportErrorJs = useMemo(() => Worklets.createRunOnJS(reportError), [reportError]);
 
   const { scanText } = useTextRecognition(TEXT_RECOGNITION_OPTIONS);
-  const extractRgb = useRgbExtractor();
-
-  frameProcessorBuildCount += 1;
-  console.log(`${LOG} building frameProcessor (#${frameProcessorBuildCount}) parser=${parser != null}`);
 
   const frameProcessor = useFrameProcessor(
     (frame) => {
       'worklet';
-      frameTick.value = frameTick.value + 1;
-      const tick = frameTick.value;
-      if (tick % 30 === 1) {
-        console.log(
-          `${LOG}[worklet] frame tick ${tick} ${frame.width}x${frame.height} orient=${frame.orientation} pixelFormat=${frame.pixelFormat}`,
-        );
-      }
-      if (parser == null) {
-        if (tick % 30 === 1) console.log(`${LOG}[worklet] no parser, skip`);
-        return;
-      }
+      if (parser == null) return;
       runAtTargetFps(TARGET_FPS, () => {
         'worklet';
-        if (isBusy.value) {
-          console.log(`${LOG}[worklet] busy, skip`);
-          return;
-        }
-        if (Date.now() < graceUntil.value) {
-          console.log(`${LOG}[worklet] in grace period, skip`);
-          return;
-        }
-        isBusy.value = true;
-        try {
-          console.log(`${LOG}[worklet] calling scanText...`);
-          const raw = scanText(frame);
-          console.log(`${LOG}[worklet] scanText returned, type=${typeof raw}`);
-          const rt = toRecognizedText(raw);
-          console.log(`${LOG}[worklet] toRecognizedText: blocks=${rt?.blocks?.length ?? -1}`);
-          const values = parser(rt);
-          console.log(`${LOG}[worklet] parser values=${values == null ? 'null' : values.length}`);
-          if (values != null && values.length > 0) {
-            if (captureFrameFlag.value) {
-              const ext = extractRgb(frame);
-              handleMatchJs(values, ext.rgb, ext.width, ext.height, ext.orientation);
-            } else {
-              handleMatchJs(values, null, 0, 0, null);
+        if (isBusy.value) return;
+        if (Date.now() < graceUntil.value) return;
+
+        // Both modes use runAsync — preview stays smooth while scanText runs
+        // on a separate worklet runtime. nativeFrameToJpeg returns only
+        // primitives (string + numbers), so it's safe to call inside runAsync
+        // unlike the resize plugin (ArrayBuffer runtime affinity).
+        runAsync(frame, () => {
+          'worklet';
+          try {
+            const raw = scanText(frame);
+            const rt = toRecognizedText(raw);
+            const values = parser(rt);
+            if (values != null && values.length > 0) {
+              isBusy.value = true;
+              if (CAPTURE_MODE === 'native-frame' && captureFrameFlag.value) {
+                const ext = nativeFrameToJpeg(frame, JPEG_QUALITY);
+                handleMatchJs(values, ext.path, ext.width, ext.height, ext.orientation);
+              } else {
+                handleMatchJs(values, null, 0, 0, null);
+              }
             }
-          } else {
-            isBusy.value = false;
+          } catch (e) {
+            reportErrorJs(e as Error);
           }
-        } catch (e) {
-          isBusy.value = false;
-          console.log(`${LOG}[worklet] ERROR: ${(e as Error)?.message ?? String(e)}`);
-          reportErrorJs(e as Error);
-        }
+        });
       });
     },
-    [parser, scanText, extractRgb, handleMatchJs, reportErrorJs, isBusy, graceUntil, captureFrameFlag, frameTick],
+    [parser, scanText, handleMatchJs, reportErrorJs, isBusy, graceUntil, captureFrameFlag],
   );
 
   const reload = useCallback(() => {
@@ -215,6 +211,7 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
     reload,
     error,
     device,
+    format,
     hasPermission,
     requestPermission,
     frameProcessor,
