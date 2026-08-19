@@ -23,6 +23,10 @@ export function validateParserConfig(config: ParserConfig): void {
     }
   }
 
+  if (config.requireAllFields != null && config.readerType !== ReaderType.PanCard) {
+    throw new Error('ParserConfig ---- requireAllFields can only be provided for panCardReader');
+  }
+
   if (config.readerType === ReaderType.FlexibleBarcode) {
     const { minLength, maxLength } = config;
     if (minLength != null && maxLength != null) {

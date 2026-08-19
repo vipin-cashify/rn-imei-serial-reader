@@ -126,6 +126,88 @@ function Scanner() {
 | `ReaderType.SerialNumber`          | Tokens following `Serial Number:` containing both a letter and a digit (≥6 chars).|
 | `ReaderType.FlexibleBarcode`       | Any alphanumeric token with letter+digit. Optional `customRegex` / length range. |
 | `ReaderType.ExactMatch`            | Exact `targetBarcode` (case-insensitive, whitespace-stripped, substring + word). |
+| `ReaderType.PanCard`               | Indian PAN card. Output: the PAN number, plus named fields (see below).          |
+
+## PAN card reader
+
+Reads an Indian PAN card and returns named fields via the third `onDone`
+argument. Works across all card eras (pre-2017, 2017+, PAN 2.0) — every era
+prints the same bilingual labels, and extraction is anchored to those labels
+rather than to absolute positions.
+
+```tsx
+<ImeiSerialReader
+  parserConfig={{ readerType: ReaderType.PanCard }}
+  onDone={(values, frame, fields) => {
+    console.log(values[0]);        // 'ABGPR1484A'
+    console.log(fields?.name);     // cardholder name
+    console.log(fields?.fatherName);
+    console.log(fields?.dob);      // normalised to DD-MM-YYYY
+    console.log(fields?.entityType); // 'Individual', 'Company', …
+  }}
+/>
+```
+
+`fields` keys: `panNumber`, `name`, `fatherName`, `dob`, `entityType`.
+
+By default every field must resolve before a match is reported. Set
+`requireAllFields: false` to accept a valid PAN number alone and take the
+remaining fields best-effort.
+
+**Accuracy note.** A PAN's tenth character is a check digit, but the algorithm
+behind it is not published by the Income Tax Department — so unlike IMEI
+(which self-validates via Luhn), a format-valid PAN cannot be proven correct.
+The parser compensates with position-aware confusable repair: PAN positions
+are typed (1–5 and 10 are letters, 6–9 are digits), so `O`↔`0`, `I`↔`1`,
+`S`↔`5`, `B`↔`8` and similar are corrected per position. Treat a scanned PAN
+as high-confidence, not verified.
+
+Non-individual cards (company, HUF, trust — any PAN whose 4th character is not
+`P`) carry no father's name, so `fatherName` is not required for them.
+
+## Scan region overlay
+
+Shows a card-shaped cutout over the preview and **crops the frame to it
+natively before OCR**. Background text outside the cutout cannot produce a
+false match, the JPEG is smaller, and ML Kit has less area to scan — so it
+improves accuracy and speed together.
+
+```tsx
+<ImeiSerialReader
+  parserConfig={{ readerType: ReaderType.PanCard }}
+  scanRegion={{}}              // ID-1 defaults
+  onDone={(values, frame, fields) => { /* … */ }}
+/>
+```
+
+Pass `{}` for the defaults, or override any field:
+
+| Option | Default | Meaning |
+| ------ | ------- | ------- |
+| `aspectRatio` | `1.585` | Cutout width ÷ height. Default is ISO/IEC 7810 ID-1 (PAN, Aadhaar, credit cards). |
+| `widthPercent` | `0.88` | Cutout width as a fraction of the view width. |
+| `verticalCenter` | `0.5` | Vertical centre as a fraction of view height. |
+| `dimOpacity` | `0.6` | Opacity of the dimmed area outside the cutout. |
+| `cornerColor` | `'#ffffff'` | Corner bracket colour. |
+| `cornerLength` | `28` | Bracket arm length (dp). |
+| `cornerWidth` | `3` | Bracket stroke width (dp). |
+| `borderRadius` | `12` | Cutout corner radius (dp). |
+| `hintText` | `'Fit the card inside the frame'` | Hint above the cutout. Pass `''` to hide. |
+| `enabled` | `true` | Master switch. |
+
+Works with every reader type, not just PAN — a tighter region helps IMEI and
+serial scanning too. Omit `scanRegion` entirely to scan the full frame.
+
+**`resizeMode` changes when a scan region is active.** Vision Camera defaults
+to `'cover'`, which scales the buffer to fill the view and centre-crops the
+overflow — roughly 18% of a 16:9 buffer is off-screen on a 19.5:9 phone. That
+puts a hidden scale and offset between screen and buffer coordinates. Setting
+a scan region therefore defaults the preview to `'contain'`, which makes that
+correction the identity at the cost of letterbox bars. Override with the
+`resizeMode` prop if you prefer the fuller preview.
+
+`frame.width`/`frame.height` describe the **cropped** image when a scan region
+is active, not the sensor frame.
 
 ## Frame capture
 
@@ -135,7 +217,13 @@ temp file. `onDone` receives the JPEG `Frame` as the second argument. No
 `takePhoto()` is involved — no shutter sound, no frame mismatch.
 
 Files live in the platform's temp directory (`NSTemporaryDirectory()` on iOS,
-the app's cache dir on Android). The consumer owns deletion.
+the app's cache dir on Android).
+
+A JPEG is written for *every* processed frame, not just matching ones — the
+file is the OCR input, not merely the capture artefact. The plugin deletes the
+previous frame's file before writing the next, so at most one scratch file
+exists at a time during a scan. The file handed to `onDone` is the last one
+written and is left in place; the consumer owns deletion of that one.
 
 ### Capture mode switch
 
@@ -149,7 +237,7 @@ installed yet). To switch, edit
 
 | Flutter                                  | RN                                       |
 | ---------------------------------------- | ---------------------------------------- |
-| `onDoneCallback(values, cameraDataModel: x)` | `onDone(values, frame)`                  |
+| `onDoneCallback(values, cameraDataModel: x)` | `onDone(values, frame, fields)`          |
 | `cameraDataModel.imageRawData` (raw bytes) | `frame.uri` (already JPEG file)          |
 | `cameraDataModel.rotation`                | `frame.orientation` (string)             |
 | `resetVisionScreen()`                    | `reload()` from the hook / reload button |

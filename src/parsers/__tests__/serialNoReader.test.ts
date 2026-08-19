@@ -4,11 +4,11 @@ const block = (text: string) => ({ blocks: [{ text }] });
 
 describe('processSerial', () => {
   it('extracts a serial after "Serial Number:" prefix', () => {
-    expect(processSerial(block('Serial Number: ABC123XYZ'))).toEqual(['ABC123XYZ']);
+    expect(processSerial(block('Serial Number: ABC123XYZ'))).toEqual({ values: ['ABC123XYZ'] });
   });
 
   it('uppercases the result', () => {
-    expect(processSerial(block('serialnumber:abc123'))).toEqual(['ABC123']);
+    expect(processSerial(block('serialnumber:abc123'))).toEqual({ values: ['ABC123'] });
   });
 
   it('requires both letters and digits', () => {
@@ -21,7 +21,7 @@ describe('processSerial', () => {
   });
 
   it('handles newline replacement', () => {
-    expect(processSerial(block('Serial Number\nABC123XYZ'))).toEqual(['ABC123XYZ']);
+    expect(processSerial(block('Serial Number\nABC123XYZ'))).toEqual({ values: ['ABC123XYZ'] });
   });
 
   it('returns null for empty input', () => {

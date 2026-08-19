@@ -4,6 +4,7 @@ import { processImei } from './imeiReader';
 import { processSerial } from './serialNoReader';
 import { makeFlexible } from './flexibleBarcodeReader';
 import { makeExact } from './exactMatchBarcodeReader';
+import { makePanCard } from './panCardReader';
 import type { ParserFn } from './types';
 
 export function createParser(config: ParserConfig): ParserFn {
@@ -21,6 +22,8 @@ export function createParser(config: ParserConfig): ParserFn {
       });
     case ReaderType.ExactMatch:
       return makeExact(config.targetBarcode as string);
+    case ReaderType.PanCard:
+      return makePanCard({ requireAllFields: config.requireAllFields });
     default: {
       const _exhaustive: never = config.readerType;
       throw new Error(`Unknown readerType: ${_exhaustive as string}`);
@@ -28,4 +31,13 @@ export function createParser(config: ParserConfig): ParserFn {
   }
 }
 
-export type { ParserFn, RecognizedText, TextBlock } from './types';
+export type {
+  BoundingBox,
+  DocumentFields,
+  ParserFn,
+  ParserResult,
+  RecognizedText,
+  TextBlock,
+  TextElement,
+  TextLine,
+} from './types';

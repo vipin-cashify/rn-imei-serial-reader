@@ -1,4 +1,4 @@
-import type { RecognizedText } from './types';
+import type { ParserResult, RecognizedText } from './types';
 
 // String sources captured into the worklet are safe. RegExp objects are
 // constructed inside the worklet body so their prototype methods (.test/.exec)
@@ -8,7 +8,7 @@ const LETTER_AND_NUMBER_RE_SRC = '^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z0-9]+$';
 const SPACE_SRC = ' ';
 const NEWLINE_SRC = '\\n';
 
-export function processSerial(rt: RecognizedText): string[] | null {
+export function processSerial(rt: RecognizedText): ParserResult | null {
   'worklet';
   const reSerial = new RegExp(SERIAL_RE_SRC);
   const reLetterAndNumber = new RegExp(LETTER_AND_NUMBER_RE_SRC);
@@ -24,7 +24,7 @@ export function processSerial(rt: RecognizedText): string[] | null {
     if (m != null) {
       const serial = m[1];
       if (serial != null && reLetterAndNumber.test(serial)) {
-        return [serial.toUpperCase()];
+        return { values: [serial.toUpperCase()] };
       }
     }
   }

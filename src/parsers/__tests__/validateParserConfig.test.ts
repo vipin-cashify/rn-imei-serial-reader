@@ -62,3 +62,21 @@ describe('validateParserConfig', () => {
     ).toThrow(/minLength must be >= 1 and maxLength must be >= minLength/);
   });
 });
+
+describe('panCardReader config', () => {
+  it('accepts a bare PanCard config', () => {
+    expect(() => validateParserConfig({ readerType: ReaderType.PanCard })).not.toThrow();
+  });
+
+  it('accepts requireAllFields on PanCard', () => {
+    expect(() =>
+      validateParserConfig({ readerType: ReaderType.PanCard, requireAllFields: false }),
+    ).not.toThrow();
+  });
+
+  it('rejects requireAllFields on a non-PanCard reader', () => {
+    expect(() =>
+      validateParserConfig({ readerType: ReaderType.Imei, requireAllFields: true }),
+    ).toThrow(/requireAllFields can only be provided for panCardReader/);
+  });
+});

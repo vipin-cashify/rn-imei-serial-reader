@@ -16,6 +16,21 @@ import java.util.HashMap
 class FrameToJpegPlugin(proxy: VisionCameraProxy, options: Map<String, Any>?) :
     FrameProcessorPlugin() {
 
+    /**
+     * Path of the JPEG written by the previous invocation.
+     *
+     * A JPEG is written for EVERY processed frame (~10/s) because the file is
+     * the OCR input, not just the capture artefact. Nothing else deletes them,
+     * so without this the temp dir grows unbounded for the whole scan session
+     * — and document scanning runs far longer before matching than IMEI does.
+     *
+     * We delete lazily (previous file on the next call) rather than eagerly,
+     * because the consumer still needs the file to exist after a match: the
+     * path is handed to JS for OCR and possibly surfaced in `onDone`.
+     * `releaseLastFile` lets the caller hand off ownership of a kept frame.
+     */
+    private var lastFilePath: String? = null
+
     override fun callback(frame: Frame, arguments: Map<String, Any>?): HashMap<String, Any?>? {
         val quality = (arguments?.get("quality") as? Number)?.toInt() ?: 80
         val image: Image = frame.image
@@ -26,10 +41,21 @@ class FrameToJpegPlugin(proxy: VisionCameraProxy, options: Map<String, Any>?) :
         val nv21 = yuv420ToNv21(image)
         val yuv = YuvImage(nv21, ImageFormat.NV21, width, height, null)
         val baos = ByteArrayOutputStream()
-        yuv.compressToJpeg(Rect(0, 0, width, height), quality, baos)
+
+        // YuvImage crops during encode, so a cropped region is cheaper than a
+        // full frame — not just more accurate.
+        val cropRect = parseCropRect(arguments, width, height, rotationDegrees)
+        yuv.compressToJpeg(cropRect, quality, baos)
         val jpegBytes = baos.toByteArray()
 
+        val outWidth = cropRect.width()
+        val outHeight = cropRect.height()
+
+        // Delete the previous frame's JPEG before writing this one.
+        deleteLastFile()
+
         val outFile = File.createTempFile("imei-", ".jpg")
+        lastFilePath = outFile.absolutePath
         FileOutputStream(outFile).use { it.write(jpegBytes) }
 
         // Embed EXIF orientation so consumers (e.g. RN <Image>) display upright
@@ -38,7 +64,80 @@ class FrameToJpegPlugin(proxy: VisionCameraProxy, options: Map<String, Any>?) :
         exif.setAttribute(ExifInterface.TAG_ORIENTATION, exifOrientation(rotationDegrees).toString())
         exif.saveAttributes()
 
-        return resultMap(outFile.absolutePath, width, height, rotationDegrees)
+        // Report the CROPPED dimensions — the consumer's Frame describes the
+        // file we actually wrote, not the sensor buffer.
+        return resultMap(outFile.absolutePath, outWidth, outHeight, rotationDegrees)
+    }
+
+    /**
+     * Reads the optional normalized `cropRect` argument and converts it to
+     * pixels in BUFFER space.
+     *
+     * The incoming rect is expressed against the UPRIGHT image — the way the
+     * user sees it on screen. This buffer is not upright: CameraX hands us
+     * sensor-native pixels and only reports `rotationDegrees`, the rotation
+     * needed to make them upright (we record it as EXIF rather than rotating).
+     * So the rect must be rotated by the inverse before it means anything
+     * here. At 90° that swaps the axes: a wide, short card on screen is a
+     * narrow, tall region of the buffer.
+     *
+     * Returns the full frame when the argument is absent or unusable, so the
+     * plugin keeps working for callers that never pass a crop.
+     */
+    private fun parseCropRect(
+        arguments: Map<String, Any>?,
+        width: Int,
+        height: Int,
+        rotationDegrees: Int
+    ): Rect {
+        val full = Rect(0, 0, width, height)
+        val raw = arguments?.get("cropRect") as? Map<*, *> ?: return full
+
+        val ux = (raw["x"] as? Number)?.toDouble() ?: return full
+        val uy = (raw["y"] as? Number)?.toDouble() ?: return full
+        val uw = (raw["width"] as? Number)?.toDouble() ?: return full
+        val uh = (raw["height"] as? Number)?.toDouble() ?: return full
+        if (uw <= 0.0 || uh <= 0.0) return full
+
+        // Upright-normalized -> buffer-normalized (inverse of rotationDegrees).
+        val r = ((rotationDegrees % 360) + 360) % 360
+        val nx: Double
+        val ny: Double
+        val nw: Double
+        val nh: Double
+        when (r) {
+            90 -> { nx = uy; ny = 1.0 - ux - uw; nw = uh; nh = uw }
+            180 -> { nx = 1.0 - ux - uw; ny = 1.0 - uy - uh; nw = uw; nh = uh }
+            270 -> { nx = 1.0 - uy - uh; ny = ux; nw = uh; nh = uw }
+            else -> { nx = ux; ny = uy; nw = uw; nh = uh }
+        }
+        if (nw <= 0.0 || nh <= 0.0) return full
+
+        // NV21 chroma is 2x2 subsampled, so odd offsets or odd extents shift
+        // the chroma plane relative to luma and tint the output. Snap to even.
+        val left = (nx * width).toInt().coerceIn(0, width - 2) and 1.inv()
+        val top = (ny * height).toInt().coerceIn(0, height - 2) and 1.inv()
+        val right = ((nx + nw) * width).toInt().coerceIn(left + 2, width) and 1.inv()
+        val bottom = ((ny + nh) * height).toInt().coerceIn(top + 2, height) and 1.inv()
+
+        if (right <= left || bottom <= top) return full
+        return Rect(left, top, right, bottom)
+    }
+
+    /**
+     * Deletes the JPEG written by the previous call, if it still exists.
+     * Failures are ignored on purpose — a leftover temp file is recoverable
+     * by the OS, but throwing here would kill the frame processor.
+     */
+    private fun deleteLastFile() {
+        val path = lastFilePath ?: return
+        lastFilePath = null
+        try {
+            val f = File(path)
+            if (f.exists()) f.delete()
+        } catch (_: Exception) {
+            // Ignore — see kdoc.
+        }
     }
 
     private fun resultMap(path: String, width: Int, height: Int, rotationDegrees: Int): HashMap<String, Any?> {

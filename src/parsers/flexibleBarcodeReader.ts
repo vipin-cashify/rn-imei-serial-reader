@@ -1,4 +1,4 @@
-import type { ParserFn, RecognizedText } from './types';
+import type { ParserFn, ParserResult, RecognizedText } from './types';
 
 // String sources captured into the worklet are safe. RegExp objects are
 // constructed inside the worklet body so their prototype methods are
@@ -24,7 +24,7 @@ export function makeFlexible(opts: FlexibleOptions): ParserFn {
   const hasCustom = typeof customRegexSource === 'string' && customRegexSource.length > 0;
   const safeCustomSrc = hasCustom ? (customRegexSource as string) : '';
 
-  return function processFlexible(rt: RecognizedText): string[] | null {
+  return function processFlexible(rt: RecognizedText): ParserResult | null {
     'worklet';
     const reSpace = new RegExp(SPACE_SRC, 'g');
     const reNewline = new RegExp(NEWLINE_SRC, 'g');
@@ -76,6 +76,6 @@ export function makeFlexible(opts: FlexibleOptions): ParserFn {
       }
     }
 
-    return found.length > 0 ? found : null;
+    return found.length > 0 ? { values: found } : null;
   };
 }
