@@ -49,7 +49,13 @@ export interface ScanRegionOptions {
   cornerLength?: number;
   /** Corner bracket stroke width in dp. Default 3. */
   cornerWidth?: number;
-  /** Cutout corner radius in dp. Default 12. */
+  /**
+   * Corner-bracket radius in dp. Default 0 — sharp.
+   *
+   * The dim panels around the cutout have hard 90-degree corners, so rounded
+   * brackets read as misaligned against them. Set a value only if you also
+   * accept that mismatch.
+   */
   borderRadius?: number;
   /** Hint text above the cutout. Pass '' to hide. */
   hintText?: string;
@@ -78,7 +84,7 @@ export const DEFAULT_SCAN_REGION: ResolvedScanRegion = {
   cornerColor: '#ffffff',
   cornerLength: 28,
   cornerWidth: 3,
-  borderRadius: 12,
+  borderRadius: 0,
   hintText: 'Fit the card inside the frame',
   enabled: true,
 };

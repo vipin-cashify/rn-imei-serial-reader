@@ -76,7 +76,26 @@ export function ScanRegionOverlay(props: Readonly<ScanRegionOverlayProps>) {
           props.resizeMode ?? 'cover',
         );
 
-  const rect = preview == null ? null : computeViewRect(region, preview.width, preview.height);
+  const rectNorm = preview == null ? null : computeViewRect(region, preview.width, preview.height);
+
+  // Convert the dim opacity into an rgba colour. See the note below on why the
+  // panels cannot simply carry an `opacity` prop.
+  const dimAlpha = Math.max(0, Math.min(1, region.dimOpacity));
+  const dimColor = `rgba(0,0,0,${dimAlpha})`;
+  const previewW = preview == null ? 0 : Math.ceil(preview.width + (preview.x - Math.floor(preview.x)));
+  const previewH = preview == null ? 0 : Math.ceil(preview.height + (preview.y - Math.floor(preview.y)));
+
+  // Convert to ROUNDED PIXELS before laying anything out. Percentage positions
+  // land on fractional pixels, which is what produced the visible seams.
+  const rect =
+    rectNorm == null || preview == null
+      ? null
+      : {
+          left: Math.round(rectNorm.x * preview.width),
+          top: Math.round(rectNorm.y * preview.height),
+          width: Math.round(rectNorm.width * preview.width),
+          height: Math.round(rectNorm.height * preview.height),
+        };
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none" onLayout={handleLayout}>
@@ -84,64 +103,46 @@ export function ScanRegionOverlay(props: Readonly<ScanRegionOverlayProps>) {
         <View
           style={{
             position: 'absolute',
-            left: preview.x,
-            top: preview.y,
-            width: preview.width,
-            height: preview.height,
+            // Round the preview box OUTWARD (floor the origin, ceil the size).
+            // Rounding to nearest could shrink it by a fraction of a pixel and
+            // leave a sliver of undimmed container showing down the left or top
+            // edge — the thin line reported on the non-document scanners.
+            left: Math.floor(preview.x),
+            top: Math.floor(preview.y),
+            width: Math.ceil(preview.width + (preview.x - Math.floor(preview.x))),
+            height: Math.ceil(preview.height + (preview.y - Math.floor(preview.y))),
           }}
         >
-          {/* Dim: above / below / left / right of the cutout. */}
-          <View
-            style={[
-              styles.dim,
-              { opacity: region.dimOpacity, top: 0, left: 0, right: 0, height: `${rect.y * 100}%` },
-            ]}
-          />
-          <View
-            style={[
-              styles.dim,
-              {
-                opacity: region.dimOpacity,
-                top: `${(rect.y + rect.height) * 100}%`,
-                left: 0,
-                right: 0,
-                bottom: 0,
-              },
-            ]}
-          />
-          <View
-            style={[
-              styles.dim,
-              {
-                opacity: region.dimOpacity,
-                top: `${rect.y * 100}%`,
-                height: `${rect.height * 100}%`,
-                left: 0,
-                width: `${rect.x * 100}%`,
-              },
-            ]}
-          />
-          <View
-            style={[
-              styles.dim,
-              {
-                opacity: region.dimOpacity,
-                top: `${rect.y * 100}%`,
-                height: `${rect.height * 100}%`,
-                left: `${(rect.x + rect.width) * 100}%`,
-                right: 0,
-              },
-            ]}
-          />
-
-          {/* Corner brackets. */}
+          {/* Dim as a single view whose BORDERS do the shading.
+              Tiling four separate panels cannot win: abutting them leaves a
+              light hairline under sub-pixel rounding, and overlapping them
+              stacks alpha into a dark one. One view sized to the cutout, with
+              borders thick enough to reach the preview edges, has no interior
+              seams at all — the browser/native layer draws the border as a
+              single region. */}
           <View
             style={{
               position: 'absolute',
-              left: `${rect.x * 100}%`,
-              top: `${rect.y * 100}%`,
-              width: `${rect.width * 100}%`,
-              height: `${rect.height * 100}%`,
+              left: 0,
+              top: 0,
+              right: 0,
+              bottom: 0,
+              borderColor: dimColor,
+              borderTopWidth: rect.top,
+              borderBottomWidth: Math.max(0, previewH - rect.top - rect.height),
+              borderLeftWidth: rect.left,
+              borderRightWidth: Math.max(0, previewW - rect.left - rect.width),
+            }}
+          />
+
+          {/* Corner brackets, sharp to match the dim's hard 90-degree corners. */}
+          <View
+            style={{
+              position: 'absolute',
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
+              height: rect.height,
             }}
           >
             {/* Each bracket draws only the two edges adjacent to its corner. */}
@@ -209,7 +210,7 @@ export function ScanRegionOverlay(props: Readonly<ScanRegionOverlayProps>) {
 
           {region.hintText.length > 0 && (
             <View
-              style={[styles.hintWrap, { top: `${Math.max(0, rect.y - 0.06) * 100}%` }]}
+              style={[styles.hintWrap, { bottom: preview.height - rect.top + 10 }]}
               pointerEvents="none"
             >
               <Text style={[styles.hint, props.hintTextStyle]}>{region.hintText}</Text>
@@ -222,7 +223,7 @@ export function ScanRegionOverlay(props: Readonly<ScanRegionOverlayProps>) {
 }
 
 const styles = StyleSheet.create({
-  dim: { position: 'absolute', backgroundColor: '#000' },
+  dim: { position: 'absolute' },
   corner: { position: 'absolute' },
   hintWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   hint: {

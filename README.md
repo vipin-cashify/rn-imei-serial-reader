@@ -243,7 +243,7 @@ Pass `{}` for the defaults, or override any field:
 | `cornerColor` | `'#ffffff'` | Corner bracket colour. |
 | `cornerLength` | `28` | Bracket arm length (dp). |
 | `cornerWidth` | `3` | Bracket stroke width (dp). |
-| `borderRadius` | `12` | Cutout corner radius (dp). |
+| `borderRadius` | `0` | Corner-bracket radius (dp). Sharp by default, to match the dim's square corners. |
 | `hintText` | `'Fit the card inside the frame'` | Hint above the cutout. Pass `''` to hide. |
 | `enabled` | `true` | Master switch. |
 

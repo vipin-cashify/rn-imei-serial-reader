@@ -23,16 +23,33 @@ export interface ImeiSerialReaderProps {
   reloadLabel?: string;
   style?: StyleProp<ViewStyle>;
   /**
-   * Shows a card-shaped cutout and crops the frame to it before OCR. Pass `{}`
-   * for the ID-1 (credit-card / PAN / Aadhaar) defaults, or override any field.
-   * Omit entirely to scan the full frame as before.
+   * The card-shaped cutout, which crops the frame to it before OCR.
+   *
+   * ON BY DEFAULT for every reader type — pass `{ enabled: false }` to scan the
+   * full frame instead. Override any field to restyle it; `hintText` sets the
+   * message shown above the cutout.
    */
   scanRegion?: ScanRegionOptions;
-  /** Overrides the preview fit mode. Defaults to 'contain' when scanRegion is set. */
+  /**
+   * Convenience shortcut for `scanRegion.hintText`. Ignored if `scanRegion`
+   * already sets `hintText`.
+   */
+  hintText?: string;
+  /** Overrides the preview fit mode. Defaults to 'contain' when a scan region is active. */
   resizeMode?: 'cover' | 'contain';
 }
 
 export function ImeiSerialReader(props: ImeiSerialReaderProps) {
+  // The scan region is on by default for every reader — a tighter region keeps
+  // background text out of the OCR input, which helps IMEI and serial reads as
+  // much as document ones. `{ enabled: false }` opts out.
+  const scanRegion = React.useMemo<ScanRegionOptions>(() => {
+    const base = props.scanRegion ?? {};
+    return props.hintText != null && base.hintText == null
+      ? { ...base, hintText: props.hintText }
+      : base;
+  }, [props.scanRegion, props.hintText]);
+
   const {
     cameraRef,
     isActive,
@@ -49,7 +66,7 @@ export function ImeiSerialReader(props: ImeiSerialReaderProps) {
     onDone: props.onDone,
     onError: props.onError,
     captureFrame: props.captureFrame,
-    scanRegion: props.scanRegion,
+    scanRegion,
     resizeMode: props.resizeMode,
   });
 
@@ -88,9 +105,9 @@ export function ImeiSerialReader(props: ImeiSerialReaderProps) {
         resizeMode={resizeMode}
         frameProcessor={frameProcessor}
       />
-      {props.scanRegion != null && (
+      {scanRegion.enabled !== false && (
         <ScanRegionOverlay
-          options={props.scanRegion}
+          options={scanRegion}
           onLayoutSize={onCameraLayout}
           // Buffer dims as displayed (portrait: short side first) so the
           // overlay can align to the letterboxed preview under 'contain'

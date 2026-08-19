@@ -56,11 +56,11 @@ export interface UseImeiSerialReaderOptions {
    * natively before OCR, so background text cannot produce false matches and
    * there are fewer pixels to encode and scan.
    *
-   * Opt-in: omitted means the full frame is used, exactly as before.
+   * ON BY DEFAULT — pass `{ enabled: false }` to scan the full frame.
    */
   scanRegion?: ScanRegionOptions;
   /**
-   * Preview fit mode. Defaults to `'contain'` when `scanRegion` is set,
+   * Preview fit mode. Defaults to `'contain'` while a scan region is active,
    * because `'cover'` centre-crops the buffer and introduces a scale+offset
    * between screen and buffer coordinates that must then be corrected for.
    * `'contain'` makes that correction the identity.
@@ -90,15 +90,14 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
   const [error, setError] = useState<Error | null>(null);
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
-  // Cap video/photo resolution. 1280x720 keeps the frames light enough for
-  // fast YUV→JPEG conversion and ML Kit text recognition.
   // A scan region crops to ~25% of the frame area, so a 1280x720 buffer yields
   // a ~400x630 image. ML Kit needs roughly 16px of text height to read
   // reliably, and a PAN card's five label/value pairs at that size sit right at
   // the limit — measured on-device it found 0-1 blocks and took ~1.1s per
   // frame. Requesting 1920x1080 when cropping keeps the crop around 600x950,
-  // which restores usable text height.
-  const wantsHighRes = opts.scanRegion != null;
+  // which restores usable text height. A scan region is the default, so
+  // `enabled: false` is the opt-out rather than an absent option.
+  const wantsHighRes = opts.scanRegion?.enabled !== false;
   const format = useCameraFormat(
     device,
     wantsHighRes
@@ -171,7 +170,7 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
   }, [isActive, isBusy, graceUntil]);
 
   const resolvedRegion = useMemo(() => resolveScanRegion(opts.scanRegion), [opts.scanRegion]);
-  const hasScanRegion = opts.scanRegion != null && resolvedRegion.enabled;
+  const hasScanRegion = resolvedRegion.enabled;
   // 'cover' hides ~18% of the buffer behind a centre-crop, which would have to
   // be corrected for in the view->buffer transform. Defaulting a scan region to
   // 'contain' makes that correction the identity and removes the largest
@@ -239,6 +238,7 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
           orientation: toPhotoRecognizerOrientation(orientation),
         });
         const rt = toRecognizedText(raw);
+
         const result = parser(rt);
         // Gate on `result.values`, never on `result.length`: a ParserResult is
         // an object, so a `.length > 0` check would read `undefined > 0` →
