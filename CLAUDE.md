@@ -71,7 +71,25 @@ The toggle is a module-level const intentionally: changing it requires a Metro r
 
 Each `ReaderType` maps to a `ParserFn: (RecognizedText) => ParserResult | null` returned by `createParser(config)` in [`src/parsers/index.ts`](src/parsers/index.ts), where `ParserResult` is `{ values: string[]; fields?: DocumentFields }`. Validation happens at create time via [`validateParserConfig`](src/validateParserConfig.ts).
 
-`values` is always populated, so consumers reading only `values` work for every reader. `fields` carries the named breakdown and is populated only by document readers (`panCardReader`), which return `{ panNumber, name, fatherName, dob, entityType }`.
+`values` is always populated, so consumers reading only `values` work for every reader. `fields` carries the named breakdown and is populated only by document readers: `panCardReader` returns `{ panNumber, name, fatherName, dob, entityCode, entityType }`, `aadhaarCardReader` returns `{ aadhaarNumber, name, dob | yearOfBirth, gender }`.
+
+### Document readers: PAN vs Aadhaar
+
+The two look similar but differ in one way that shapes their whole design — **whether the check digit is usable**:
+
+| | PAN | Aadhaar |
+|---|---|---|
+| Check digit | algorithm unpublished → **unusable** | **Verhoeff, published** ([`verhoeff.ts`](src/parsers/verhoeff.ts)) |
+| Rejecting a bad read | format + label context only | mathematically verified |
+| Confusable repair | position-typed (chars 1–5, 10 letters; 6–9 digits) | uniform — Verhoeff arbitrates a wrong repair |
+
+Practical consequence: the Aadhaar parser can afford to guess aggressively at OCR confusables, because the checksum catches a wrong guess. The PAN parser cannot, which is why it leans much harder on label anchoring.
+
+`verhoeff.ts` exports `__tables` **for tests only** — the D/P/INV tables are ~200 hand-transcribed numbers and a single wrong cell yields an algorithm that still accepts and rejects numbers, just the wrong ones. The tests assert the D5 group axioms (associativity across all 1000 triples, Latin-square, true inverses, permutation order 8) rather than spot values, which pins every cell. Do not re-export `__tables` from `src/index.ts`.
+
+⚠️ **Aadhaar-specific trap: the 16-digit VID** is printed on the card directly below the Aadhaar number, and a sliding 12-digit window inside it can pass Verhoeff by coincidence — the checksum does *not* protect against this. Two independent guards: lines containing `VID` are excluded before digits are even looked for, and only **exact** 12-digit runs match (never a window inside a longer run). Keep both.
+
+⚠️ **Aadhaar regional language varies by enrolment state** (16 languages), unlike PAN's fixed Hindi/English. So the parser skips unrecognised lines rather than matching a fixed set of non-Latin label strings. Do not "improve" it by hard-coding Tamil/Bengali/etc. variants.
 
 The `default:` branch of the `switch` in `parsers/index.ts` assigns `config.readerType` to `never`, so **adding a `ReaderType` without a `case` is a compile error** — the one extension seam TypeScript enforces for you. The silent seam is the hand-maintained `useMemo` dep array in [`useImeiSerialReader.ts`](src/hooks/useImeiSerialReader.ts): `exhaustive-deps` is disabled there, so a new `ParserConfig` field omitted from that list compiles, lints, passes tests, and simply never rebuilds the parser at runtime.
 

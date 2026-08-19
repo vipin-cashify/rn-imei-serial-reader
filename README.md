@@ -127,6 +127,7 @@ function Scanner() {
 | `ReaderType.FlexibleBarcode`       | Any alphanumeric token with letter+digit. Optional `customRegex` / length range. |
 | `ReaderType.ExactMatch`            | Exact `targetBarcode` (case-insensitive, whitespace-stripped, substring + word). |
 | `ReaderType.PanCard`               | Indian PAN card. Output: the PAN number, plus named fields (see below).          |
+| `ReaderType.AadhaarCard`           | Indian Aadhaar card, front side. Output: the Aadhaar number, plus named fields.   |
 
 ## PAN card reader
 
@@ -164,6 +165,57 @@ as high-confidence, not verified.
 
 Non-individual cards (company, HUF, trust — any PAN whose 4th character is not
 `P`) carry no father's name, so `fatherName` is not required for them.
+
+## Aadhaar card reader
+
+Reads the **front side** of an Indian Aadhaar card. The address is on the back
+and is not supported.
+
+```tsx
+<ImeiSerialReader
+  parserConfig={{ readerType: ReaderType.AadhaarCard }}
+  scanRegion={{}}
+  onDone={(values, frame, fields) => {
+    console.log(values[0]);          // '234567890123' — canonical 12 digits
+    console.log(fields?.name);
+    console.log(fields?.dob);        // 'DD-MM-YYYY', when a full date is printed
+    console.log(fields?.yearOfBirth);// set instead of dob on year-only cards
+    console.log(fields?.gender);     // 'MALE' | 'FEMALE' | 'TRANSGENDER'
+  }}
+/>
+```
+
+`fields` keys: `aadhaarNumber`, `name`, `dob` **or** `yearOfBirth`, `gender`,
+and `masked` (see below). The number is returned as 12 unformatted digits so it
+stays comparable — group it for display in your own UI.
+
+**Verified, not just format-matched.** The 12th digit of every Aadhaar number is
+a Verhoeff checksum, and UIDAI never issues a number starting with `0` or `1`.
+Both are checked, so a candidate is *mathematically* validated — this is
+stronger than the PAN reader can manage, since PAN's check-digit algorithm is
+unpublished. It also lets OCR confusable repair be applied aggressively
+(`O`→`0`, `I`→`1`, `S`→`5`, `B`→`8`, …): a wrong repair simply fails the
+checksum.
+
+**Date of birth may be a year only.** UIDAI prints just the year when the date
+is recorded as *declared* or *approximate*. In that case `yearOfBirth` is set
+and `dob` is absent — the reader never fabricates `01-01-YYYY`.
+
+**Masked Aadhaar is rejected, not parsed.** On a masked card (`XXXX XXXX 1234`)
+only the last four digits are real. The reader returns `fields.masked === 'true'`
+with **no** `aadhaarNumber` and an empty `values`, so a partial number can never
+be mistaken for a complete one. Treat it as "ask for an unmasked card", not as a
+failed scan.
+
+**Positioning.** Both the PVC card and the perforated card on an e-Aadhaar
+printout are ID-1, so the default `scanRegion={{}}` fits. For an e-Aadhaar sheet
+the user positions the **card portion** inside the cutout — not the whole page.
+Cropping to it is what keeps the enrolment number, download date, and address
+block out of the OCR input.
+
+**VID is never returned.** The 16-digit Virtual ID printed below the Aadhaar
+number is explicitly excluded — a 12-digit slice of it could otherwise pass the
+checksum by coincidence.
 
 ## Scan region overlay
 

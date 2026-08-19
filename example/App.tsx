@@ -26,7 +26,11 @@ const PICKER: { label: string; value: ReaderType }[] = [
   { label: 'Flexible', value: ReaderType.FlexibleBarcode },
   { label: 'Exact', value: ReaderType.ExactMatch },
   { label: 'PAN', value: ReaderType.PanCard },
+  { label: 'Aadhaar', value: ReaderType.AadhaarCard },
 ];
+
+/** Document readers get the ID-1 card cutout; the others scan the full frame. */
+const DOC_READERS: ReaderType[] = [ReaderType.PanCard, ReaderType.AadhaarCard];
 
 export default function App() {
   return (
@@ -58,7 +62,7 @@ function AppContent() {
     if (readerType === ReaderType.ExactMatch) {
       return { readerType, targetBarcode: targetBarcode || 'PLACEHOLDER' };
     }
-    if (readerType === ReaderType.PanCard) {
+    if (readerType === ReaderType.PanCard || readerType === ReaderType.AadhaarCard) {
       return { readerType, requireAllFields: panRequireAll };
     }
     return { readerType };
@@ -105,7 +109,7 @@ function AppContent() {
         />
       )}
 
-      {readerType === ReaderType.PanCard && (
+      {DOC_READERS.includes(readerType) && (
         <View style={styles.captureToggle}>
           <Text style={styles.captureLabel}>Require all fields</Text>
           <Switch value={panRequireAll} onValueChange={setPanRequireAll} />
@@ -121,9 +125,11 @@ function AppContent() {
         <ImeiSerialReader
           parserConfig={parserConfig}
           captureFrame={captureFrame}
-          // PAN cards are ID-1, so show the card cutout and crop to it. The
-          // other readers scan the full frame as before.
-          scanRegion={readerType === ReaderType.PanCard ? {} : undefined}
+          // PAN and Aadhaar cards are both ID-1, so show the card cutout and
+          // crop to it. For an e-Aadhaar printout the user positions the
+          // perforated card portion inside the cutout, not the whole sheet.
+          // The other readers scan the full frame as before.
+          scanRegion={DOC_READERS.includes(readerType) ? {} : undefined}
           onDone={(values, f, docFields) => {
             setResults(values);
             setFrame(f);

@@ -80,3 +80,15 @@ describe('panCardReader config', () => {
     ).toThrow(/requireAllFields can only be provided for panCardReader/);
   });
 });
+
+describe('aadhaarCardReader config', () => {
+  it('accepts a bare AadhaarCard config', () => {
+    expect(() => validateParserConfig({ readerType: ReaderType.AadhaarCard })).not.toThrow();
+  });
+
+  it('accepts requireAllFields on AadhaarCard', () => {
+    expect(() =>
+      validateParserConfig({ readerType: ReaderType.AadhaarCard, requireAllFields: false }),
+    ).not.toThrow();
+  });
+});

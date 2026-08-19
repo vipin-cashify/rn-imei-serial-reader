@@ -5,6 +5,7 @@ import { processSerial } from './serialNoReader';
 import { makeFlexible } from './flexibleBarcodeReader';
 import { makeExact } from './exactMatchBarcodeReader';
 import { makePanCard } from './panCardReader';
+import { makeAadhaarCard } from './aadhaarCardReader';
 import type { ParserFn } from './types';
 
 export function createParser(config: ParserConfig): ParserFn {
@@ -24,6 +25,8 @@ export function createParser(config: ParserConfig): ParserFn {
       return makeExact(config.targetBarcode as string);
     case ReaderType.PanCard:
       return makePanCard({ requireAllFields: config.requireAllFields });
+    case ReaderType.AadhaarCard:
+      return makeAadhaarCard({ requireAllFields: config.requireAllFields });
     default: {
       const _exhaustive: never = config.readerType;
       throw new Error(`Unknown readerType: ${_exhaustive as string}`);

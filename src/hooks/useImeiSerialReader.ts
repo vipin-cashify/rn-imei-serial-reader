@@ -24,7 +24,19 @@ import {
 } from '../types';
 
 const GRACE_MS = 1000;
-const TARGET_FPS = 10;
+/**
+ * Frames per second offered to the pipeline.
+ *
+ * This is a ceiling, not a rate: `isProcessing` serialises OCR, so a frame is
+ * only taken when the previous one has finished. Measured on-device, ML Kit
+ * takes ~200ms when it finds no text and ~950ms when it does — so asking for 10
+ * fps meant discarding roughly nine requests out of ten while still paying to
+ * deliver each frame to the worklet.
+ *
+ * 5 fps comfortably exceeds what OCR can consume, so nothing is lost in
+ * responsiveness, and the frame thread does markedly less throwaway work.
+ */
+const TARGET_FPS = 5;
 const JPEG_QUALITY = 80;
 
 export interface UseImeiSerialReaderOptions {

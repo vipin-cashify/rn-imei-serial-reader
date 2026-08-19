@@ -4,6 +4,7 @@ export const ReaderType = {
   FlexibleBarcode: 'flexible_barcode_reader',
   ExactMatch: 'exact_match_reader',
   PanCard: 'pan_card_reader',
+  AadhaarCard: 'aadhaar_card_reader',
 } as const;
 
 export type ReaderType = (typeof ReaderType)[keyof typeof ReaderType];
@@ -18,10 +19,11 @@ export interface ParserConfig {
   minLength?: number;
   maxLength?: number;
   /**
-   * PanCard only. When true (default) the parser reports a match only once
-   * every field resolves — PAN, name, date of birth, and (for individual
-   * cards) father's name. Set false to accept a valid PAN alone and take the
-   * other fields best-effort.
+   * PanCard / AadhaarCard only. When true (default) the parser reports a match
+   * only once every field resolves — for PAN that is the number, name, date of
+   * birth and (for individual cards) father's name; for Aadhaar the number,
+   * name and a date of birth. Set false to accept a valid document number
+   * alone and take the other fields best-effort.
    */
   requireAllFields?: boolean;
 }
