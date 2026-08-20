@@ -35,7 +35,11 @@ export interface NormalizedRect {
 export const ID1_ASPECT_RATIO = 85.6 / 54; // ≈ 1.5852
 
 export interface ScanRegionOptions {
-  /** Cutout width ÷ height. Defaults to ID-1 (≈1.585). */
+  /**
+   * Cutout width ÷ height. Defaults to `DEFAULT_ASPECT_RATIO` — ID-1 opened up
+   * 20% in height so the window is not card-tight. Pass `ID1_ASPECT_RATIO` for
+   * an exact credit-card shape.
+   */
   aspectRatio?: number;
   /** Cutout width as a fraction of the view width. Default 0.88. */
   widthPercent?: number;
@@ -57,7 +61,16 @@ export interface ScanRegionOptions {
    * accept that mismatch.
    */
   borderRadius?: number;
-  /** Hint text above the cutout. Pass '' to hide. */
+  /**
+   * Hint text above the cutout. Pass '' to hide.
+   *
+   * The default does three things deliberately: 'Scanning…' signals the app is
+   * working (a read takes ~1s, and a static instruction leaves the user unsure
+   * anything is happening), 'hold steady' addresses motion blur — a real cause
+   * of misreads that nothing else in the UI mentions — and it avoids naming a
+   * 'card', since the readers also target phone screens, serial stickers and
+   * barcode labels.
+   */
   hintText?: string;
   /** Master switch. Default true. */
   enabled?: boolean;
@@ -76,8 +89,19 @@ export interface ResolvedScanRegion {
   enabled: boolean;
 }
 
+/**
+ * Default cutout ratio: ID-1 opened up by 20% in height.
+ *
+ * A card-tight ID-1 window leaves no tolerance — the user has to place the card
+ * almost perfectly, and anything slightly larger (a phone settings screen, a
+ * serial sticker on a device back) will not fit at all. Height is derived as
+ * `width / aspectRatio`, so dividing the ratio by 1.2 makes the opening 20%
+ * taller while keeping the same width.
+ */
+export const DEFAULT_ASPECT_RATIO = ID1_ASPECT_RATIO / 1.2;
+
 export const DEFAULT_SCAN_REGION: ResolvedScanRegion = {
-  aspectRatio: ID1_ASPECT_RATIO,
+  aspectRatio: DEFAULT_ASPECT_RATIO,
   widthPercent: 0.88,
   verticalCenter: 0.5,
   dimOpacity: 0.6,
@@ -85,7 +109,7 @@ export const DEFAULT_SCAN_REGION: ResolvedScanRegion = {
   cornerLength: 28,
   cornerWidth: 3,
   borderRadius: 0,
-  hintText: 'Fit the card inside the frame',
+  hintText: 'Scanning… hold steady inside the frame',
   enabled: true,
 };
 

@@ -1,6 +1,7 @@
 export { ImeiSerialReader } from './components/ImeiSerialReader';
 export { ScanRegionOverlay } from './components/ScanRegionOverlay';
 export {
+  DEFAULT_ASPECT_RATIO,
   DEFAULT_SCAN_REGION,
   ID1_ASPECT_RATIO,
   computeCropRect,

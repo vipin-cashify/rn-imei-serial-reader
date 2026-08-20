@@ -1,4 +1,5 @@
 import {
+  DEFAULT_ASPECT_RATIO,
   DEFAULT_SCAN_REGION,
   ID1_ASPECT_RATIO,
   clampRect,
@@ -38,9 +39,20 @@ declare global {
 }
 
 describe('resolveScanRegion', () => {
-  it('defaults to the ID-1 aspect ratio', () => {
-    expect(resolveScanRegion().aspectRatio).toBeCloseTo(1.5852, 3);
+  // The default is ID-1 opened up 20% in height, not ID-1 itself: a card-tight
+  // window leaves no placement tolerance, and anything larger than a card (a
+  // phone settings screen, a serial sticker) would not fit at all.
+  it('defaults to ID-1 opened up 20% in height', () => {
     expect(ID1_ASPECT_RATIO).toBeCloseTo(85.6 / 54, 10);
+    expect(DEFAULT_ASPECT_RATIO).toBeCloseTo(ID1_ASPECT_RATIO / 1.2, 10);
+    expect(resolveScanRegion().aspectRatio).toBeCloseTo(DEFAULT_ASPECT_RATIO, 10);
+  });
+
+  it('yields a cutout 20% taller than ID-1 at the same width', () => {
+    const idOne = computeViewRect({ ...DEFAULT_SCAN_REGION, aspectRatio: ID1_ASPECT_RATIO }, 1000, 2000)!;
+    const dflt = computeViewRect(DEFAULT_SCAN_REGION, 1000, 2000)!;
+    expect(dflt.width).toBeCloseTo(idOne.width, 10);
+    expect(dflt.height / idOne.height).toBeCloseTo(1.2, 6);
   });
 
   it('applies overrides without dropping the other defaults', () => {
