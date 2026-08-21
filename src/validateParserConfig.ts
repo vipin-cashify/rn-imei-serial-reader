@@ -23,6 +23,16 @@ export function validateParserConfig(config: ParserConfig): void {
     }
   }
 
+  if (
+    config.requireAllFields != null &&
+    config.readerType !== ReaderType.PanCard &&
+    config.readerType !== ReaderType.AadhaarCard
+  ) {
+    throw new Error(
+      'ParserConfig ---- requireAllFields can only be provided for panCardReader or aadhaarCardReader',
+    );
+  }
+
   if (config.readerType === ReaderType.FlexibleBarcode) {
     const { minLength, maxLength } = config;
     if (minLength != null && maxLength != null) {

@@ -6,7 +6,7 @@ describe('makeFlexible default validation', () => {
   const parser = makeFlexible({});
 
   it('extracts alphanumeric tokens with both letters and digits', () => {
-    expect(parser(block('ABC123'))).toEqual(['ABC123']);
+    expect(parser(block('ABC123'))).toEqual({ values: ['ABC123'] });
   });
 
   it('rejects all-letters', () => {
@@ -18,17 +18,17 @@ describe('makeFlexible default validation', () => {
   });
 
   it('uppercases output', () => {
-    expect(parser(block('abc123'))).toEqual(['ABC123']);
+    expect(parser(block('abc123'))).toEqual({ values: ['ABC123'] });
   });
 
   it('strips intra-block whitespace before matching (matches Flutter behavior)', () => {
     const result = parser(block('FOO1 BAR2 FOO1'));
-    expect(result).toEqual(['FOO1BAR2FOO1']);
+    expect(result).toEqual({ values: ['FOO1BAR2FOO1'] });
   });
 
   it('extracts and dedups across blocks', () => {
     const rt = { blocks: [{ text: 'FOO1' }, { text: 'BAR2' }, { text: 'FOO1' }] };
-    expect(parser(rt)).toEqual(['FOO1', 'BAR2']);
+    expect(parser(rt)).toEqual({ values: ['FOO1', 'BAR2'] });
   });
 });
 
@@ -36,8 +36,8 @@ describe('makeFlexible with length bounds', () => {
   const parser = makeFlexible({ minLength: 5, maxLength: 8 });
 
   it('accepts in-range', () => {
-    expect(parser(block('ABC12'))).toEqual(['ABC12']);
-    expect(parser(block('ABCDE123'))).toEqual(['ABCDE123']);
+    expect(parser(block('ABC12'))).toEqual({ values: ['ABC12'] });
+    expect(parser(block('ABCDE123'))).toEqual({ values: ['ABCDE123'] });
   });
 
   it('rejects too-short', () => {
@@ -53,7 +53,7 @@ describe('makeFlexible with custom regex', () => {
   const parser = makeFlexible({ customRegexSource: '[A-Z]{3}[0-9]{4}' });
 
   it('matches the custom pattern', () => {
-    expect(parser(block('ABC1234'))).toEqual(['ABC1234']);
+    expect(parser(block('ABC1234'))).toEqual({ values: ['ABC1234'] });
   });
 
   it('rejects non-matching tokens', () => {

@@ -14,6 +14,20 @@ public class FrameToJpegPlugin: FrameProcessorPlugin {
   private static let ciContext = CIContext()
   private static var hasWarmedUp = false
 
+  /**
+   Path of the JPEG written by the previous invocation.
+
+   A JPEG is written for EVERY processed frame (~10/s) because the file is the
+   OCR input, not just the capture artefact. Nothing else deletes them, so
+   without this the temp dir grows unbounded for the whole scan session — and
+   document scanning runs far longer before matching than IMEI does.
+
+   Deletion is lazy (previous file on the next call) rather than eager, because
+   the consumer still needs the file after a match: the path is handed to JS
+   for OCR and possibly surfaced in `onDone`.
+   */
+  private var lastFilePath: String?
+
   public override init(proxy: VisionCameraProxyHolder, options: [AnyHashable: Any]! = [:]) {
     super.init(proxy: proxy, options: options)
     FrameToJpegPlugin.warmUpInBackground()
@@ -97,8 +111,20 @@ public class FrameToJpegPlugin: FrameProcessorPlugin {
     let correctedOrientation = cgImagePropertyOrientation(from: frame.orientation)
     let oriented = ci.oriented(forExifOrientation: Int32(correctedOrientation.rawValue))
 
+    // Crop AFTER .oriented(...) on purpose. `oriented.extent` is already the
+    // upright image the user sees, so a screen-derived rect maps directly —
+    // and, critically, the empirical +180° correction above is already applied.
+    // Cropping before would mean replicating that fudge here, and a 180° error
+    // is not shape-changing, so nothing would catch it: the crop would just
+    // silently grab the wrong end of the card.
+    let cropped = applyCropRect(to: oriented, arguments: arguments)
+
+    // Delete the previous frame's JPEG before writing this one.
+    deleteLastFile()
+
     let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("imei-\(UUID().uuidString).jpg")
     let url = URL(fileURLWithPath: path)
+    lastFilePath = path
 
     let colorSpace = ci.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
     let options: [CIImageRepresentationOption: Any] = [
@@ -107,7 +133,7 @@ public class FrameToJpegPlugin: FrameProcessorPlugin {
 
     do {
       try FrameToJpegPlugin.ciContext.writeJPEGRepresentation(
-        of: oriented,
+        of: cropped,
         to: url,
         colorSpace: colorSpace,
         options: options
@@ -117,10 +143,11 @@ public class FrameToJpegPlugin: FrameProcessorPlugin {
       return [:]
     }
 
-    // oriented.extent already reflects the post-rotation dimensions, so no
-    // manual quarter-turn swap is needed any more.
-    let outWidth = Int(oriented.extent.width)
-    let outHeight = Int(oriented.extent.height)
+    // Report the CROPPED extent — the consumer's Frame describes the file we
+    // actually wrote. `.extent` already reflects the post-rotation dimensions,
+    // so no manual quarter-turn swap is needed.
+    let outWidth = Int(cropped.extent.width)
+    let outHeight = Int(cropped.extent.height)
 
     let elapsed = Date().timeIntervalSince(t0) * 1000
     print(String(format: "[frameToJpeg] callback took %.0fms  %dx%d", elapsed, outWidth, outHeight))
@@ -131,6 +158,52 @@ public class FrameToJpegPlugin: FrameProcessorPlugin {
       "height": outHeight,
       "orientation": orientationString(frame.orientation)
     ]
+  }
+
+  /**
+   Applies the optional normalized `cropRect` argument to an already-upright
+   CIImage. Returns the image unchanged when no usable rect is supplied, so the
+   plugin keeps working for callers that never pass a crop.
+
+   The rect is top-left origin (matching the screen) while CIImage is
+   BOTTOM-left origin, so Y needs flipping. Note it is `1 - y - height`, not
+   `1 - y`: we are locating the rect's bottom edge, so the height has to come
+   off too. Getting this wrong mirrors the crop vertically.
+   */
+  private func applyCropRect(to image: CIImage, arguments: [AnyHashable: Any]?) -> CIImage {
+    guard let raw = arguments?["cropRect"] as? [AnyHashable: Any],
+          let nx = (raw["x"] as? NSNumber)?.doubleValue,
+          let ny = (raw["y"] as? NSNumber)?.doubleValue,
+          let nw = (raw["width"] as? NSNumber)?.doubleValue,
+          let nh = (raw["height"] as? NSNumber)?.doubleValue,
+          nw > 0, nh > 0
+    else { return image }
+
+    let extent = image.extent
+    guard extent.width > 0, extent.height > 0 else { return image }
+
+    let rect = CGRect(
+      x: extent.origin.x + CGFloat(nx) * extent.width,
+      y: extent.origin.y + CGFloat(1.0 - ny - nh) * extent.height,
+      width: CGFloat(nw) * extent.width,
+      height: CGFloat(nh) * extent.height
+    )
+
+    let clamped = rect.intersection(extent)
+    guard !clamped.isNull, clamped.width >= 1, clamped.height >= 1 else { return image }
+
+    return image.cropped(to: clamped)
+  }
+
+  /**
+   Deletes the JPEG written by the previous call, if it still exists.
+   Failures are ignored on purpose — a leftover temp file is recoverable by the
+   OS, but throwing here would kill the frame processor.
+   */
+  private func deleteLastFile() {
+    guard let path = lastFilePath else { return }
+    lastFilePath = nil
+    try? FileManager.default.removeItem(atPath: path)
   }
 
   /**

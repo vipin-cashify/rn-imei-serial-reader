@@ -32,23 +32,29 @@ Tests live only at `src/**/__tests__/**/*.test.ts` (parsers + validateParserConf
 The whole library is one pipeline plumbed through a Vision Camera frame processor worklet. Reading [`src/hooks/useImeiSerialReader.ts`](src/hooks/useImeiSerialReader.ts) end-to-end is the fastest way in.
 
 ```
-Camera frame (worklet thread)
+Camera frame (frame thread, worklet)
   └─ useFrameProcessor + runAtTargetFps(10)
-       ├─ busy guard (isBusy shared value)
-       ├─ grace period after activate (GRACE_MS=1s)
-       └─ runAsync(frame, ...)               ← preview stays smooth
-            ├─ scanText(frame)               ← react-native-vision-camera-text-recognition
-            ├─ toRecognizedText(raw)         ← src/adapters/mlkitAdapter.ts
-            ├─ parser(rt)                    ← one of src/parsers/*.ts
-            └─ if values found:
-                 ├─ if CAPTURE_MODE === 'native-frame' && captureFrame:
-                 │    └─ nativeFrameToJpeg(frame)   ← bundled native plugin
-                 │         ├─ Android: YUV→NV21→YuvImage.compressToJpeg + EXIF rotation
-                 │         └─ iOS: CIContext.writeJPEGRepresentation (CIImage.oriented)
-                 │         → returns { path, width, height, orientation }
-                 └─ Worklets.createRunOnJS(handleMatch)
-                      └─ JS thread: build Frame { uri: file://path, ... }, onDone(values, frame)
+       ├─ guards: isBusy | isProcessing | grace period (GRACE_MS=1s after activate)
+       ├─ isProcessing = true
+       ├─ nativeFrameToJpeg(frame, 80)      ← SYNC on frame thread, ~20-50ms
+       │    ├─ deletes the PREVIOUS frame's JPEG first (one scratch file at a time)
+       │    ├─ Android: YUV→NV21→YuvImage.compressToJpeg + EXIF rotation
+       │    └─ iOS: CIImage.oriented → CIContext.writeJPEGRepresentation
+       │    → returns { path, width, height, orientation }  (primitives only)
+       └─ Worklets.createRunOnJS(recognizeAndMatch)
+            └─ JS thread:
+                 ├─ PhotoRecognizer({ uri, orientation })   ← plain NativeModule, no worklets
+                 ├─ toRecognizedText(raw)                   ← src/adapters/mlkitAdapter.ts
+                 ├─ parser(rt)                              ← one of src/parsers/*.ts
+                 ├─ if result.values.length > 0 → isBusy = true; onDone(values, frame?, fields?)
+                 └─ finally isProcessing = false
 ```
+
+**`runAsync` is deliberately not used.** It SIGSEGV'd under bridgeless mode via worklets-core's secondary runtime (commits `bdbf44b`, `1937e20`), so OCR moved to the JS thread using `PhotoRecognizer` (file-path based) instead of `scanText(frame)`. Only the JPEG encode stays on the frame thread.
+
+The JPEG is therefore the **OCR input**, not just the capture artefact — one is written per processed frame (~10/s). `captureFrame` only controls whether the path is surfaced to the consumer.
+
+⚠️ `CAPTURE_MODE` in [`src/captureMode.ts`](src/captureMode.ts) is now **effectively dead** — the hook never reads it, and `takePhoto()` is never called. Only `ImeiSerialReader.tsx` reads it, to set the `photo` prop on `<Camera>`.
 
 `ImeiSerialReader` (the component) is a thin wrapper around `useImeiSerialReader` + a default `<Camera>` render + a `ReloadButton`. Custom UIs should consume the hook directly.
 
@@ -63,9 +69,33 @@ The toggle is a module-level const intentionally: changing it requires a Metro r
 
 ### Parsers
 
-Each `ReaderType` maps to a `ParserFn: (RecognizedText) => string[] | null` returned by `createParser(config)` in [`src/parsers/index.ts`](src/parsers/index.ts). Validation happens at create time via [`validateParserConfig`](src/validateParserConfig.ts). The four parsers (`imeiReader`, `serialNoReader`, `flexibleBarcodeReader`, `exactMatchBarcodeReader`) all run inside the frame-processor worklet — see worklet rules below.
+Each `ReaderType` maps to a `ParserFn: (RecognizedText) => ParserResult | null` returned by `createParser(config)` in [`src/parsers/index.ts`](src/parsers/index.ts), where `ParserResult` is `{ values: string[]; fields?: DocumentFields }`. Validation happens at create time via [`validateParserConfig`](src/validateParserConfig.ts).
 
-The OCR shape parsers consume (`RecognizedText` in [`src/parsers/types.ts`](src/parsers/types.ts)) is intentionally decoupled from the MLKit plugin's response. `toRecognizedText` in the mlkit adapter is the only place that knows the plugin's `Text[] / { resultText, blocks: [frame, cornerPoints, lines, languages, blockText] }` shape — if you upgrade the plugin, change that file.
+`values` is always populated, so consumers reading only `values` work for every reader. `fields` carries the named breakdown and is populated only by document readers: `panCardReader` returns `{ panNumber, name, fatherName, dob, entityCode, entityType }`, `aadhaarCardReader` returns `{ aadhaarNumber, name, dob | yearOfBirth, gender }`.
+
+### Document readers: PAN vs Aadhaar
+
+The two look similar but differ in one way that shapes their whole design — **whether the check digit is usable**:
+
+| | PAN | Aadhaar |
+|---|---|---|
+| Check digit | algorithm unpublished → **unusable** | **Verhoeff, published** ([`verhoeff.ts`](src/parsers/verhoeff.ts)) |
+| Rejecting a bad read | format + label context only | mathematically verified |
+| Confusable repair | position-typed (chars 1–5, 10 letters; 6–9 digits) | uniform — Verhoeff arbitrates a wrong repair |
+
+Practical consequence: the Aadhaar parser can afford to guess aggressively at OCR confusables, because the checksum catches a wrong guess. The PAN parser cannot, which is why it leans much harder on label anchoring.
+
+`verhoeff.ts` exports `__tables` **for tests only** — the D/P/INV tables are ~200 hand-transcribed numbers and a single wrong cell yields an algorithm that still accepts and rejects numbers, just the wrong ones. The tests assert the D5 group axioms (associativity across all 1000 triples, Latin-square, true inverses, permutation order 8) rather than spot values, which pins every cell. Do not re-export `__tables` from `src/index.ts`.
+
+⚠️ **Aadhaar-specific trap: the 16-digit VID** is printed on the card directly below the Aadhaar number, and a sliding 12-digit window inside it can pass Verhoeff by coincidence — the checksum does *not* protect against this. Two independent guards: lines containing `VID` are excluded before digits are even looked for, and only **exact** 12-digit runs match (never a window inside a longer run). Keep both.
+
+⚠️ **Aadhaar regional language varies by enrolment state** (16 languages), unlike PAN's fixed Hindi/English. So the parser skips unrecognised lines rather than matching a fixed set of non-Latin label strings. Do not "improve" it by hard-coding Tamil/Bengali/etc. variants.
+
+The `default:` branch of the `switch` in `parsers/index.ts` assigns `config.readerType` to `never`, so **adding a `ReaderType` without a `case` is a compile error** — the one extension seam TypeScript enforces for you. The silent seam is the hand-maintained `useMemo` dep array in [`useImeiSerialReader.ts`](src/hooks/useImeiSerialReader.ts): `exhaustive-deps` is disabled there, so a new `ParserConfig` field omitted from that list compiles, lints, passes tests, and simply never rebuilds the parser at runtime.
+
+The OCR shape parsers consume (`RecognizedText` in [`src/parsers/types.ts`](src/parsers/types.ts)) is intentionally decoupled from the MLKit plugin's response. It carries block text plus optional per-line/per-word text and bounding boxes — document parsers need the geometry, because associating a label like `/FATHER'S NAME` with the value beneath it is positional. Everything beyond `blocks[].text` is optional, since the adapter's `resultText` fallback path cannot produce geometry.
+
+`toRecognizedText` in the mlkit adapter is the only place that knows the plugin's tuple encoding (`[frame, cornerPoints, lines, languages, blockText]`, with lines as `[cornerPoints, elements, frame, languages, text]`) — if you upgrade the plugin, change that file. Note the frame index differs between blocks (0) and lines (2).
 
 ### The native `frameToJpeg` plugin
 
@@ -76,6 +106,20 @@ The reason this plugin exists: `vision-camera-resize-plugin`'s `resize()` return
 - **Registration**: Android via `FrameProcessorPluginRegistry.addFrameProcessorPlugin` in [`ImeiSerialReaderPackage.kt`](android/src/main/java/com/cashify/imeireader/ImeiSerialReaderPackage.kt)'s companion-object init; iOS via `+ (void) load` in [`FrameToJpegPlugin.mm`](ios/FrameToJpegPlugin.mm). Both autolinked.
 
 Consumer owns deletion of the JPEG files (just like the previous flow).
+
+### Scan region + native crop
+
+[`src/scanRegion.ts`](src/scanRegion.ts) is pure (no React, no native) and holds the view→buffer geometry. Keep it that way — the transform fails *silently* when wrong (you crop the wrong region and OCR just stops matching), so being unit-testable without a device is the whole point. 27 tests cover it.
+
+Three transforms stack, and each is a separate trap:
+
+1. **Preview fit.** `resizeMode` defaults to `'cover'`, which centre-crops the buffer to fill the view — ~18% of a 16:9 buffer is off-screen on a 19.5:9 phone. Setting a `scanRegion` defaults the preview to `'contain'`, making this the identity.
+2. **Rotation (Android only).** CameraX hands the plugin sensor-native landscape pixels and only reports `rotationDegrees`; the plugin writes EXIF rather than rotating. So `parseCropRect` applies the *inverse* rotation — at 90° a wide-short screen rect becomes a narrow-tall buffer rect. JS passes the rect upright; the native side rotates it.
+3. **iOS origin + ordering.** `CIImage` is bottom-left origin, so Y flips as `1 - y - height` (subtracting the height, not just the origin). The crop happens **after** `.oriented(...)` on purpose: that inherits the empirical +180° hardware fudge instead of forcing us to replicate it. A 180° error is shape-preserving, so nothing would catch it — the crop would silently grab the wrong end of the card.
+
+Both plugins fall back to the full frame when `cropRect` is absent or unusable, so an un-rebuilt app keeps working.
+
+The crop rect reaches the frame processor as four `useSharedValue` numbers — refs do not cross into worklet scope. `cropW.value === 0` means "not measured yet, don't crop".
 
 ## Worklet rules (read before editing parsers, adapters, or the hook)
 

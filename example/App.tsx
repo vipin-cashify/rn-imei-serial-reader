@@ -15,6 +15,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import {
   ImeiSerialReader,
   ReaderType,
+  type DocumentFields,
   type Frame,
   type ParserConfig,
 } from 'react-native-imei-serial-reader';
@@ -24,7 +25,12 @@ const PICKER: { label: string; value: ReaderType }[] = [
   { label: 'Serial #', value: ReaderType.SerialNumber },
   { label: 'Flexible', value: ReaderType.FlexibleBarcode },
   { label: 'Exact', value: ReaderType.ExactMatch },
+  { label: 'PAN', value: ReaderType.PanCard },
+  { label: 'Aadhaar', value: ReaderType.AadhaarCard },
 ];
+
+/** Document readers get the ID-1 card cutout; the others scan the full frame. */
+const DOC_READERS: ReaderType[] = [ReaderType.PanCard, ReaderType.AadhaarCard];
 
 export default function App() {
   return (
@@ -38,9 +44,11 @@ function AppContent() {
   const [readerType, setReaderType] = useState<ReaderType>(ReaderType.Imei);
   const [captureFrame, setCaptureFrame] = useState(false);
   const [customRegex, setCustomRegex] = useState('');
+  const [panRequireAll, setPanRequireAll] = useState(true);
   const [targetBarcode, setTargetBarcode] = useState('');
   const [results, setResults] = useState<string[]>([]);
   const [frame, setFrame] = useState<Frame | undefined>();
+  const [fields, setFields] = useState<DocumentFields | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [viewerUri, setViewerUri] = useState<string | null>(null);
 
@@ -54,8 +62,11 @@ function AppContent() {
     if (readerType === ReaderType.ExactMatch) {
       return { readerType, targetBarcode: targetBarcode || 'PLACEHOLDER' };
     }
+    if (readerType === ReaderType.PanCard || readerType === ReaderType.AadhaarCard) {
+      return { readerType, requireAllFields: panRequireAll };
+    }
     return { readerType };
-  }, [readerType, customRegex, targetBarcode]);
+  }, [readerType, customRegex, targetBarcode, panRequireAll]);
 
   return (
     <SafeAreaView style={styles.fill}>
@@ -67,6 +78,7 @@ function AppContent() {
               setReaderType(p.value);
               setResults([]);
               setFrame(undefined);
+              setFields(undefined);
               setError(null);
             }}
             style={[styles.tab, readerType === p.value && styles.tabActive]}
@@ -97,6 +109,13 @@ function AppContent() {
         />
       )}
 
+      {DOC_READERS.includes(readerType) && (
+        <View style={styles.captureToggle}>
+          <Text style={styles.captureLabel}>Require all fields</Text>
+          <Switch value={panRequireAll} onValueChange={setPanRequireAll} />
+        </View>
+      )}
+
       <View style={styles.captureToggle}>
         <Text style={styles.captureLabel}>Capture frame on match</Text>
         <Switch value={captureFrame} onValueChange={setCaptureFrame} />
@@ -106,9 +125,15 @@ function AppContent() {
         <ImeiSerialReader
           parserConfig={parserConfig}
           captureFrame={captureFrame}
-          onDone={(values, f) => {
+          // PAN and Aadhaar cards are both ID-1, so show the card cutout and
+          // crop to it. For an e-Aadhaar printout the user positions the
+          // perforated card portion inside the cutout, not the whole sheet.
+          // The other readers scan the full frame as before.
+          scanRegion={DOC_READERS.includes(readerType) ? {} : undefined}
+          onDone={(values, f, docFields) => {
             setResults(values);
             setFrame(f);
+            setFields(docFields);
           }}
           onError={(e) => setError(e.message)}
         />
@@ -123,6 +148,16 @@ function AppContent() {
             {r}
           </Text>
         ))}
+        {fields != null && (
+          <View style={styles.fieldsWrap}>
+            {Object.keys(fields).map((k) => (
+              <Text key={k} style={styles.fieldLine}>
+                <Text style={styles.fieldKey}>{k}: </Text>
+                {fields[k]}
+              </Text>
+            ))}
+          </View>
+        )}
         {frame != null && (
           <View style={styles.thumbnailWrap}>
             <Text style={styles.muted}>
@@ -196,6 +231,9 @@ const styles = StyleSheet.create({
   resultLine: { color: '#0f0', fontFamily: 'Courier', fontSize: 14 },
   muted: { color: '#888' },
   error: { color: '#f87171' },
+  fieldsWrap: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#333' },
+  fieldLine: { color: '#e5e7eb', fontSize: 13, marginBottom: 2 },
+  fieldKey: { color: '#9ca3af', fontWeight: '700' },
   thumbnailWrap: { marginTop: 8 },
   thumbnail: { width: '100%', height: 160, marginTop: 4, backgroundColor: '#000' },
   tapHint: { color: '#60a5fa', fontSize: 12, marginTop: 4, textAlign: 'center' },

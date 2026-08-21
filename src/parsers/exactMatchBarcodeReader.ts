@@ -1,4 +1,4 @@
-import type { ParserFn, RecognizedText } from './types';
+import type { ParserFn, ParserResult, RecognizedText } from './types';
 
 const NON_WORD_SRC = '[^\\w]';
 const WHITESPACE_SRC = '\\s+';
@@ -10,7 +10,7 @@ export function makeExact(target: string): ParserFn {
   // worklet directive), so module-level RegExps from the JS runtime are fine.
   const normalizedTarget = target.trim().toUpperCase().replace(/\s+/g, '');
 
-  return function processExact(rt: RecognizedText): string[] | null {
+  return function processExact(rt: RecognizedText): ParserResult | null {
     'worklet';
     const reSpace = new RegExp(SPACE_SRC, 'g');
     const reNewline = new RegExp(NEWLINE_SRC, 'g');
@@ -25,17 +25,17 @@ export function makeExact(target: string): ParserFn {
       const normalizedScanned = s.toUpperCase();
 
       if (normalizedScanned === normalizedTarget) {
-        return [normalizedTarget];
+        return { values: [normalizedTarget] };
       }
       if (normalizedScanned.indexOf(normalizedTarget) !== -1) {
-        return [normalizedTarget];
+        return { values: [normalizedTarget] };
       }
 
       const words = s.split(reNonWord);
       for (let wi = 0; wi < words.length; wi++) {
         const word = words[wi];
         if (word != null && word.length > 0 && word.toUpperCase() === normalizedTarget) {
-          return [normalizedTarget];
+          return { values: [normalizedTarget] };
         }
       }
     }
