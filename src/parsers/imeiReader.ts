@@ -1,14 +1,12 @@
 import type { ParserResult, RecognizedText } from './types';
 
-// String sources captured into the worklet are safe. The RegExp objects
-// themselves are constructed inside the worklet body so their prototype
-// methods (.test/.matchAll) are available in the worklet runtime.
+// Regex sources only; the RegExp objects are constructed inside the
+// function body below.
 const IMEI_RE_SRC = '(.)*([0-9]{15,16})(.)*';
 const ALL_DIGITS_SRC = '^\\d+$';
 const SPACE_SRC = ' ';
 
 export function processImei(rt: RecognizedText): ParserResult | null {
-  'worklet';
   const reTest = new RegExp(IMEI_RE_SRC);
   const reGlobal = new RegExp(IMEI_RE_SRC, 'g');
   const reAllDigits = new RegExp(ALL_DIGITS_SRC);
@@ -33,7 +31,7 @@ export function processImei(rt: RecognizedText): ParserResult | null {
       const candidate = m[i];
       if (candidate == null) continue;
 
-      // inline isValidImei (file-local helpers don't carry reliably into worklet scope)
+      // inline isValidImei
       if (!reAllDigits.test(candidate)) continue;
       if (candidate.length !== 15) continue;
       let sum = 0;

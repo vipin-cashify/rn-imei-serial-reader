@@ -29,13 +29,12 @@ import type { ParserFn, ParserResult, RecognizedText, TextLine } from './types';
  * context, position-aware confusable correction, and (in the hook) requiring
  * the same value across consecutive frames.
  *
- * Worklet note: this runs in a worklet runtime. The worklets-core babel plugin
- * does NOT reliably carry file-local helpers into worklet scope, so all logic
- * is inlined in the returned function on purpose. Do not factor it out.
+ * All logic is inlined in the returned function on purpose. Do not factor it
+ * out.
  */
 
-// Regex sources only — RegExp objects are constructed inside the worklet body
-// so their prototype methods exist in the worklet VM.
+// Regex sources only — the RegExp objects are constructed inside the
+// returned function below.
 const PAN_SRC = '[A-Z]{5}[0-9]{4}[A-Z]';
 const PAN_STRICT_SRC = '^[A-Z]{5}[0-9]{4}[A-Z]$';
 const DOB_SRC = '(\\d{2})[-/.](\\d{2})[-/.](\\d{4})';
@@ -97,7 +96,6 @@ export function makePanCard(opts: PanCardOptions): ParserFn {
   const requireAllFields = opts.requireAllFields !== false;
 
   return function processPanCard(rt: RecognizedText): ParserResult | null {
-    'worklet';
     const rePan = new RegExp(PAN_SRC);
     const rePanGlobal = new RegExp(PAN_SRC, 'g');
     const rePanStrict = new RegExp(PAN_STRICT_SRC);

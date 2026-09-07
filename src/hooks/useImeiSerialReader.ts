@@ -1,43 +1,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Camera,
-  type CameraDevice,
-  type CameraDeviceFormat,
-  runAtTargetFps,
   useCameraDevice,
-  useCameraFormat,
   useCameraPermission,
-  useFrameProcessor,
+  type CameraDevice,
+  type CameraOutput,
+  type CameraRef,
 } from 'react-native-vision-camera';
-import { Worklets, useSharedValue } from 'react-native-worklets-core';
-import { PhotoRecognizer } from 'react-native-vision-camera-text-recognition';
+import { toRecognizedText } from '../adapters/ocrAdapter';
+import { createOcrRecognizer } from '../native/createOcrRecognizer';
 import { createParser } from '../parsers';
 import type { DocumentFields } from '../parsers/types';
-import { toRecognizedText } from '../adapters/mlkitAdapter';
-import { nativeFrameToJpeg } from '../adapters/nativeFrameToJpeg';
 import { computeCropRect, resolveScanRegion, type ScanRegionOptions } from '../scanRegion';
-import {
-  toPhotoRecognizerOrientation,
-  type Frame,
-  type FrameOrientation,
-  type ParserConfig,
-} from '../types';
+import type { OcrFrame } from '../specs/OcrRecognizer.nitro';
+import type { Frame, ParserConfig } from '../types';
 
+/** Ignore frames for this long after (re)activation so a stale scene does not match. */
 const GRACE_MS = 1000;
 /**
- * Frames per second offered to the pipeline.
- *
- * This is a ceiling, not a rate: `isProcessing` serialises OCR, so a frame is
- * only taken when the previous one has finished. Measured on-device, ML Kit
- * takes ~200ms when it finds no text and ~950ms when it does — so asking for 10
- * fps meant discarding roughly nine requests out of ten while still paying to
- * deliver each frame to the worklet.
- *
- * 5 fps comfortably exceeds what OCR can consume, so nothing is lost in
- * responsiveness, and the frame thread does markedly less throwaway work.
+ * Upper bound on analysed frames per second. MLKit takes ~200ms with no text
+ * and ~950ms with text on mid-range devices; 5 fps exceeds what OCR can consume
+ * while keeping the analysis thread mostly idle. Enforced natively.
  */
 const TARGET_FPS = 5;
 const JPEG_QUALITY = 80;
+/** Fallback analysis size AS DISPLAYED (portrait) until the session reports its resolution. */
+const DEFAULT_BUFFER: BufferSize = { width: 720, height: 1280 };
+
+export interface BufferSize {
+  width: number;
+  height: number;
+}
 
 export interface UseImeiSerialReaderOptions {
   parserConfig: ParserConfig;
@@ -50,11 +42,12 @@ export interface UseImeiSerialReaderOptions {
    */
   onDone: (values: string[], frame?: Frame, fields?: DocumentFields) => void;
   onError?: (error: Error) => void;
+  /** Deliver the matching frame as a JPEG `Frame` in `onDone`. Costs a JPEG encode per analysed frame. */
   captureFrame?: boolean;
   /**
    * Restricts OCR to a card-shaped region of the frame. The frame is cropped
    * natively before OCR, so background text cannot produce false matches and
-   * there are fewer pixels to encode and scan.
+   * there are fewer pixels to scan.
    *
    * ON BY DEFAULT — pass `{ enabled: false }` to scan the full frame.
    */
@@ -69,71 +62,44 @@ export interface UseImeiSerialReaderOptions {
 }
 
 export interface UseImeiSerialReaderReturn {
-  cameraRef: React.RefObject<Camera | null>;
+  cameraRef: React.RefObject<CameraRef | null>;
   isActive: boolean;
   reload: () => void;
   error: Error | null;
   device: CameraDevice | undefined;
-  format: CameraDeviceFormat | undefined;
+  /** Pass to `<Camera outputs>`. Stable until the parser/capture options change. */
+  outputs: CameraOutput[];
+  /** Analysis buffer size AS DISPLAYED (portrait: short side first). */
+  bufferSize: BufferSize;
   hasPermission: boolean;
   requestPermission: () => Promise<boolean>;
-  frameProcessor: ReturnType<typeof useFrameProcessor>;
-  /** Feed the camera view's measured size in so the crop rect can be computed. */
+  /** Feed the preview's measured size in so the crop rect can be computed. */
   onCameraLayout: (width: number, height: number) => void;
+  /** Pass to `<Camera onStarted>`. */
+  onCameraStarted: () => void;
+  /** Pass to `<Camera onError>`. */
+  onCameraError: (error: Error) => void;
   /** Effective preview fit mode — pass to `<Camera resizeMode>`. */
   resizeMode: 'cover' | 'contain';
 }
 
 export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSerialReaderReturn {
-  const cameraRef = useRef<Camera>(null);
+  const cameraRef = useRef<CameraRef | null>(null);
   const [isActive, setIsActive] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [bufferSize, setBufferSize] = useState<BufferSize>(DEFAULT_BUFFER);
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
-  // A scan region crops to ~25% of the frame area, so a 1280x720 buffer yields
-  // a ~400x630 image. ML Kit needs roughly 16px of text height to read
-  // reliably, and a PAN card's five label/value pairs at that size sit right at
-  // the limit — measured on-device it found 0-1 blocks and took ~1.1s per
-  // frame. Requesting 1920x1080 when cropping keeps the crop around 600x950,
-  // which restores usable text height. A scan region is the default, so
-  // `enabled: false` is the opt-out rather than an absent option.
-  const wantsHighRes = opts.scanRegion?.enabled !== false;
-  const format = useCameraFormat(
-    device,
-    wantsHighRes
-      ? [
-          { photoResolution: { width: 1920, height: 1080 } },
-          { videoResolution: { width: 1920, height: 1080 } },
-        ]
-      : [
-          { photoResolution: { width: 1920, height: 1080 } },
-          { videoResolution: { width: 1280, height: 720 } },
-        ],
-  );
-
-  const isBusy = useSharedValue<boolean>(false);
-  const graceUntil = useSharedValue<number>(0);
-  // True while a JS-thread PhotoRecognizer call is in flight. Prevents the
-  // frame processor from queueing up multiple OCR requests — one attempt
-  // completes before the next frame is even considered.
-  const isProcessing = useSharedValue<boolean>(false);
-
-  // The frame processor is a worklet, so the crop rect must reach it as a
-  // shared value — refs do not cross into worklet scope. Serialized to four
-  // numbers because plain objects are simplest to capture reliably.
-  // A width of 0 means "not measured yet, do not crop".
-  const cropX = useSharedValue<number>(0);
-  const cropY = useSharedValue<number>(0);
-  const cropW = useSharedValue<number>(0);
-  const cropH = useSharedValue<number>(0);
 
   const onDoneRef = useRef(opts.onDone);
   onDoneRef.current = opts.onDone;
   const onErrorRef = useRef(opts.onError);
   onErrorRef.current = opts.onError;
-  // OCR runs on the JS thread now, so this ref is read from `recognizeAndMatch`.
-  const captureFrameRef = useRef(!!opts.captureFrame);
-  captureFrameRef.current = !!opts.captureFrame;
+  const captureFrame = !!opts.captureFrame;
+
+  // Set once a parser has matched; cleared on reload / re-activation.
+  const matchedRef = useRef(false);
+  const graceUntilRef = useRef(0);
 
   const parserResult = useMemo<{ parser: ReturnType<typeof createParser> | null; error: Error | null }>(() => {
     try {
@@ -154,6 +120,8 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
     opts.parserConfig.requireAllFields,
   ]);
   const parser = parserResult.parser;
+  const parserRef = useRef(parser);
+  parserRef.current = parser;
 
   useEffect(() => {
     setError(parserResult.error);
@@ -162,156 +130,139 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
     }
   }, [parserResult]);
 
-  useEffect(() => {
-    if (isActive) {
-      isBusy.value = false;
-      graceUntil.value = Date.now() + GRACE_MS;
-    }
-  }, [isActive, isBusy, graceUntil]);
+  const reportError = useCallback((e: Error) => {
+    setError(e);
+    onErrorRef.current?.(e);
+  }, []);
 
   const resolvedRegion = useMemo(() => resolveScanRegion(opts.scanRegion), [opts.scanRegion]);
   const hasScanRegion = resolvedRegion.enabled;
   // 'cover' hides ~18% of the buffer behind a centre-crop, which would have to
   // be corrected for in the view->buffer transform. Defaulting a scan region to
-  // 'contain' makes that correction the identity and removes the largest
-  // source of silent crop error.
+  // 'contain' makes that correction the identity.
   const resizeMode: 'cover' | 'contain' = opts.resizeMode ?? (hasScanRegion ? 'contain' : 'cover');
 
-  const onCameraLayout = useCallback(
-    (viewWidth: number, viewHeight: number) => {
+  // A scan region crops to ~25% of the frame, so 1280x720 leaves too little
+  // text height for MLKit (~16px needed). Request 1920x1080 when cropping.
+  const highResolution = hasScanRegion;
+
+  // Native OCR output. Callbacks are routed through refs so the native object
+  // is only rebuilt when the stream configuration changes.
+  const handleFrameRef = useRef<(frame: OcrFrame) => void>(() => {});
+  const recognizer = useMemo(
+    () =>
+      createOcrRecognizer({
+        targetFps: TARGET_FPS,
+        highResolution,
+        captureJpeg: captureFrame,
+        jpegQuality: JPEG_QUALITY,
+        onTextRecognized: (frame) => handleFrameRef.current(frame),
+        onError: (e) => reportError(e),
+      }),
+    [highResolution, captureFrame, reportError],
+  );
+  useEffect(() => () => recognizer.dispose(), [recognizer]);
+  const outputs = useMemo(() => [recognizer.output], [recognizer]);
+
+  handleFrameRef.current = (frame: OcrFrame) => {
+    try {
+      const currentParser = parserRef.current;
+      if (currentParser == null) return;
+      if (matchedRef.current) return;
+      if (Date.now() < graceUntilRef.current) return;
+
+      const result = currentParser(toRecognizedText(frame));
+      // Gate on `result.values`, never on `result.length`: a ParserResult is
+      // an object, so a `.length > 0` check would read `undefined > 0`.
+      if (result == null || result.values.length === 0) return;
+
+      matchedRef.current = true;
+      recognizer.setPaused(true);
+      const frameForConsumer: Frame | undefined =
+        captureFrame && frame.jpegPath != null
+          ? {
+              uri: `file://${frame.jpegPath}`,
+              width: frame.width,
+              height: frame.height,
+              orientation: frame.orientation,
+            }
+          : undefined;
+      onDoneRef.current(result.values, frameForConsumer, result.fields);
+    } catch (e) {
+      reportError(e as Error);
+    }
+  };
+
+  /**
+   * Clears the match and resumes analysis. Only the `isActive` effect and
+   * `reload()` may call this — see `onCameraStarted`.
+   */
+  const rearm = useCallback(() => {
+    matchedRef.current = false;
+    graceUntilRef.current = Date.now() + GRACE_MS;
+    recognizer.setPaused(false);
+  }, [recognizer]);
+
+  useEffect(() => {
+    if (isActive) rearm();
+  }, [isActive, rearm]);
+
+  // Last measured preview size, re-applied when the buffer size changes.
+  const lastLayoutRef = useRef<{ width: number; height: number } | null>(null);
+
+  const applyCrop = useCallback(
+    (viewWidth: number, viewHeight: number, buffer: BufferSize) => {
       if (!hasScanRegion) {
-        cropW.value = 0;
+        recognizer.setCropRect(undefined);
         return;
       }
-      // The buffer dims AS DISPLAYED. The format is landscape (e.g. 1280x720)
-      // while the preview is portrait, so swap before computing the fit.
-      const fw = format?.videoWidth ?? 1280;
-      const fh = format?.videoHeight ?? 720;
-      const displayedW = Math.min(fw, fh);
-      const displayedH = Math.max(fw, fh);
-
       const rect = computeCropRect({
         region: resolvedRegion,
         viewWidth,
         viewHeight,
-        bufferWidth: displayedW,
-        bufferHeight: displayedH,
+        bufferWidth: buffer.width,
+        bufferHeight: buffer.height,
         resizeMode,
-        // The native side receives an already-upright image on iOS, and on
-        // Android applies the rect to the raw buffer whose rotation it knows.
-        // Rotation is therefore handled natively; pass the rect upright.
+        // Rotation is handled natively: Android maps the upright rect into the
+        // raw buffer using its rotationDegrees, iOS crops after orienting.
         rotationDegrees: 0,
       });
-      if (rect == null) {
-        cropW.value = 0;
-        return;
-      }
-      cropX.value = rect.x;
-      cropY.value = rect.y;
-      cropW.value = rect.width;
-      cropH.value = rect.height;
+      recognizer.setCropRect(rect == null ? undefined : rect);
     },
-    [hasScanRegion, resolvedRegion, resizeMode, format, cropX, cropY, cropW, cropH],
+    [hasScanRegion, resolvedRegion, resizeMode, recognizer],
   );
 
-  const reportError = useCallback((e: Error) => {
-    setError(e);
-    onErrorRef.current?.(e);
-  }, []);
-  const reportErrorJs = useMemo(() => Worklets.createRunOnJS(reportError), [reportError]);
-
-  // JS-thread OCR + match handler. Called via `runOnJS` from the frame
-  // processor with a JPEG file path (already written on the frame thread).
-  // PhotoRecognizer is a plain NativeModule call — no worklets involved —
-  // so it avoids the SIGSEGV in worklets-core's `invokeOnWorkletThread`
-  // that killed the old `runAsync(frame, ...)` path under bridgeless mode.
-  const recognizeAndMatch = useCallback(
-    async (path: string, width: number, height: number, orientation: FrameOrientation) => {
-      try {
-        if (parser == null) return;
-        const raw = await PhotoRecognizer({
-          uri: `file://${path}`,
-          // The plugin expects camelCase ('landscapeLeft'); our public
-          // FrameOrientation is kebab-case ('landscape-left'). Passing ours
-          // through directly meant only 'portrait' ever matched and every
-          // other orientation was silently dropped by the plugin.
-          orientation: toPhotoRecognizerOrientation(orientation),
-        });
-        const rt = toRecognizedText(raw);
-
-        const result = parser(rt);
-        // Gate on `result.values`, never on `result.length`: a ParserResult is
-        // an object, so a `.length > 0` check would read `undefined > 0` →
-        // false and silently never fire onDone.
-        if (result != null && result.values.length > 0) {
-          isBusy.value = true;
-          const frameForConsumer: Frame | undefined = captureFrameRef.current
-            ? { uri: `file://${path}`, width, height, orientation }
-            : undefined;
-          onDoneRef.current(result.values, frameForConsumer, result.fields);
-        }
-      } catch (e) {
-        const err = e as Error;
-        setError(err);
-        onErrorRef.current?.(err);
-      } finally {
-        isProcessing.value = false;
-      }
+  const onCameraLayout = useCallback(
+    (viewWidth: number, viewHeight: number) => {
+      lastLayoutRef.current = { width: viewWidth, height: viewHeight };
+      applyCrop(viewWidth, viewHeight, bufferSize);
     },
-    [parser, isBusy, isProcessing],
-  );
-  const recognizeAndMatchJs = useMemo(
-    () => Worklets.createRunOnJS(recognizeAndMatch),
-    [recognizeAndMatch],
+    [applyCrop, bufferSize],
   );
 
-  const frameProcessor = useFrameProcessor(
-    (frame) => {
-      'worklet';
-      if (parser == null) return;
-      runAtTargetFps(TARGET_FPS, () => {
-        'worklet';
-        if (isBusy.value) return;
-        if (isProcessing.value) return;
-        if (Date.now() < graceUntil.value) return;
+  useEffect(() => {
+    const layout = lastLayoutRef.current;
+    if (layout != null) applyCrop(layout.width, layout.height, bufferSize);
+  }, [applyCrop, bufferSize]);
 
-        // Do only the fast, synchronous YUV→JPEG conversion on the camera
-        // frame thread (~20-50ms), then hand the path to the JS thread for
-        // OCR via PhotoRecognizer. This keeps the camera pipeline
-        // unblocked — preview stays smooth even though ML Kit runs off
-        // the frame thread. Also sidesteps the bridgeless SIGSEGV
-        // triggered by vision-camera's `runAsync` + worklets-core
-        // secondary runtime path.
-        try {
-          isProcessing.value = true;
-          // Width 0 means the view has not been measured yet (or no scan
-          // region is configured) — encode the full frame rather than crop
-          // against a stale or zero size.
-          const crop =
-            cropW.value > 0
-              ? { x: cropX.value, y: cropY.value, width: cropW.value, height: cropH.value }
-              : null;
-          const ext = nativeFrameToJpeg(frame, JPEG_QUALITY, crop);
-          recognizeAndMatchJs(ext.path, ext.width, ext.height, ext.orientation);
-        } catch (e) {
-          isProcessing.value = false;
-          reportErrorJs(e as Error);
-        }
-      });
-    },
-    [
-      parser,
-      recognizeAndMatchJs,
-      reportErrorJs,
-      isBusy,
-      isProcessing,
-      graceUntil,
-      cropX,
-      cropY,
-      cropW,
-      cropH,
-    ],
-  );
+  const onCameraStarted = useCallback(() => {
+    // `currentResolution` is sensor-native (landscape); the overlay wants the
+    // size as displayed in portrait, so short side first.
+    const res = recognizer.output.currentResolution;
+    if (res != null && res.width > 0 && res.height > 0) {
+      const next = { width: Math.min(res.width, res.height), height: Math.max(res.width, res.height) };
+      setBufferSize((prev) => (prev.width === next.width && prev.height === next.height ? prev : next));
+    }
+    // Deliberately NOT `rearm()`. VC5 fires `onStarted` on EVERY session start,
+    // including the restart that follows a match (app foregrounded, device
+    // reconfigured, …); re-arming here would clear `matchedRef` and let the
+    // same label fire a second `onDone`. Only refresh the grace window so a
+    // stale scene from before the restart cannot match — arming belongs to the
+    // `isActive` effect and `reload()`.
+    graceUntilRef.current = Date.now() + GRACE_MS;
+  }, [recognizer]);
+
+  const onCameraError = useCallback((e: Error) => reportError(e), [reportError]);
 
   const reload = useCallback(() => {
     setError(null);
@@ -331,11 +282,13 @@ export function useImeiSerialReader(opts: UseImeiSerialReaderOptions): UseImeiSe
     reload,
     error,
     device,
-    format,
+    outputs,
+    bufferSize,
     hasPermission,
     requestPermission,
-    frameProcessor,
     onCameraLayout,
+    onCameraStarted,
+    onCameraError,
     resizeMode,
   };
 }

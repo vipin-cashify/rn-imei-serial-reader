@@ -1,13 +1,12 @@
 import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Camera } from 'react-native-vision-camera';
-import { CAPTURE_MODE } from '../captureMode';
 import { useImeiSerialReader } from '../hooks/useImeiSerialReader';
-import type { Frame, ParserConfig } from '../types';
 import type { DocumentFields } from '../parsers/types';
+import type { ScanRegionOptions } from '../scanRegion';
+import type { Frame, ParserConfig } from '../types';
 import { ReloadButton } from './ReloadButton';
 import { ScanRegionOverlay } from './ScanRegionOverlay';
-import type { ScanRegionOptions } from '../scanRegion';
 
 export interface ImeiSerialReaderProps {
   parserConfig: ParserConfig;
@@ -40,14 +39,9 @@ export interface ImeiSerialReaderProps {
 }
 
 export function ImeiSerialReader(props: ImeiSerialReaderProps) {
-  // The scan region is on by default for every reader — a tighter region keeps
-  // background text out of the OCR input, which helps IMEI and serial reads as
-  // much as document ones. `{ enabled: false }` opts out.
   const scanRegion = React.useMemo<ScanRegionOptions>(() => {
     const base = props.scanRegion ?? {};
-    return props.hintText != null && base.hintText == null
-      ? { ...base, hintText: props.hintText }
-      : base;
+    return props.hintText != null && base.hintText == null ? { ...base, hintText: props.hintText } : base;
   }, [props.scanRegion, props.hintText]);
 
   const {
@@ -56,10 +50,12 @@ export function ImeiSerialReader(props: ImeiSerialReaderProps) {
     reload,
     error,
     device,
-    format,
+    outputs,
+    bufferSize,
     hasPermission,
-    frameProcessor,
     onCameraLayout,
+    onCameraStarted,
+    onCameraError,
     resizeMode,
   } = useImeiSerialReader({
     parserConfig: props.parserConfig,
@@ -98,26 +94,23 @@ export function ImeiSerialReader(props: ImeiSerialReaderProps) {
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
-        format={format}
         isActive={isActive}
-        photo={CAPTURE_MODE === 'take-photo' && !!props.captureFrame}
-        photoQualityBalance="speed"
+        outputs={outputs}
+        // The crop rect and the overlay both live in INTERFACE space. VC5
+        // defaults to 'device', which rotates the analysis stream whenever the
+        // operator tilts a portrait-locked phone — the cutout would then no
+        // longer match what is analysed.
+        orientationSource="interface"
         resizeMode={resizeMode}
-        frameProcessor={frameProcessor}
+        onStarted={onCameraStarted}
+        onError={onCameraError}
       />
       {scanRegion.enabled !== false && (
         <ScanRegionOverlay
           options={scanRegion}
           onLayoutSize={onCameraLayout}
-          // Buffer dims as displayed (portrait: short side first) so the
-          // overlay can align to the letterboxed preview under 'contain'
-          // instead of to its container.
-          bufferWidth={
-            format != null ? Math.min(format.videoWidth, format.videoHeight) : undefined
-          }
-          bufferHeight={
-            format != null ? Math.max(format.videoWidth, format.videoHeight) : undefined
-          }
+          bufferWidth={bufferSize.width}
+          bufferHeight={bufferSize.height}
           resizeMode={resizeMode}
         />
       )}

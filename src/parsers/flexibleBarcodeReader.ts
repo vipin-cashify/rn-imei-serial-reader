@@ -1,8 +1,7 @@
 import type { ParserFn, ParserResult, RecognizedText } from './types';
 
-// String sources captured into the worklet are safe. RegExp objects are
-// constructed inside the worklet body so their prototype methods are
-// available in the worklet runtime.
+// Regex sources only; the RegExp objects are constructed inside the
+// function body below.
 const ALPHANUMERIC_DEFAULT_SRC = '[A-Za-z0-9]+';
 const ALPHANUMERIC_VALID_SRC = '^[A-Za-z0-9]+$';
 const HAS_LETTER_SRC = '[A-Za-z]';
@@ -25,7 +24,6 @@ export function makeFlexible(opts: FlexibleOptions): ParserFn {
   const safeCustomSrc = hasCustom ? (customRegexSource as string) : '';
 
   return function processFlexible(rt: RecognizedText): ParserResult | null {
-    'worklet';
     const reSpace = new RegExp(SPACE_SRC, 'g');
     const reNewline = new RegExp(NEWLINE_SRC, 'g');
     const reAlnumValid = new RegExp(ALPHANUMERIC_VALID_SRC);
@@ -48,7 +46,7 @@ export function makeFlexible(opts: FlexibleOptions): ParserFn {
         const candidate = m[0];
         if (candidate == null) continue;
 
-        // inline validity check (file-local helpers don't carry into worklet scope)
+        // inline validity check
         if (candidate.length === 0) continue;
         if (minLength != null && candidate.length < minLength) continue;
         if (maxLength != null && candidate.length > maxLength) continue;

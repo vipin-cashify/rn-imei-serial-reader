@@ -1,18 +1,20 @@
 # react-native-imei-serial-reader
 
-Live-camera OCR scanner for IMEI, Serial Number, Flexible Barcode, and Exact-Match reads.
+Live-camera OCR scanner for IMEI, Serial Number, Flexible Barcode, Exact-Match,
+PAN card, and Aadhaar card reads.
 Port of the Flutter `imei_serial_reader` package (v2.3.2).
 
 ## Install
 
 ```sh
-yarn add react-native-imei-serial-reader \
-  react-native-vision-camera \
-  react-native-vision-camera-text-recognition \
-  react-native-worklets-core
+yarn add react-native-imei-serial-reader react-native-vision-camera react-native-nitro-modules react-native-nitro-image
 ```
 
-iOS:
+Requires `react-native-vision-camera` ≥ 5.2.0 and `react-native-nitro-modules`
+0.37.x (the checked-in nitrogen output is coupled to that nitro minor). No babel
+plugin, no worklets, no patches.
+
+iOS (minimum deployment target 15.5):
 
 ```sh
 cd ios && pod install
@@ -31,48 +33,9 @@ Android — add to `AndroidManifest.xml`:
 <uses-permission android:name="android.permission.CAMERA" />
 ```
 
-This library bundles a native Vision Camera Frame Processor Plugin (`frameToJpeg`,
-Kotlin + Swift). It's auto-linked — no manual registration on either platform.
-
-### Required patches for peer dependencies
-
-Two of this library's peer dependencies have bugs that break modern RN builds (RN 0.85+):
-
-- `react-native-vision-camera-text-recognition@3.1.1` — Kotlin type-inference error
-  in the Android build.
-- `react-native-worklets-core@1.6.3` — babel plugin references the deprecated names
-  `@babel/plugin-proposal-optional-chaining` and `@babel/plugin-proposal-nullish-coalescing-operator`,
-  which modern Babel no longer ships.
-
-This library ships one-line patches for both. You need to wire up
-[`patch-package`](https://github.com/ds300/patch-package) in your app so the patches
-get applied on install.
-
-In your app:
-
-```sh
-yarn add -D patch-package @babel/preset-typescript
-mkdir -p patches
-cp node_modules/react-native-imei-serial-reader/patches/*.patch patches/
-```
-
-Then add a `postinstall` script to your app's `package.json`:
-
-```json
-"scripts": {
-  "postinstall": "patch-package"
-}
-```
-
-Run `yarn install` once to apply. From then on, the patches reapply automatically
-on every install.
-
-> **Why `@babel/preset-typescript`?** The worklets-core babel plugin calls babel's
-> `transformSync` internally with `preset-typescript`. On most package managers this
-> ships transitively via `@react-native/babel-preset`, but yarn 4's strict resolution
-> requires an explicit install. Adding it as a devDep is safe everywhere.
-
 ## Usage
+
+> **Example app:** `example/` has not been migrated to VisionCamera 5 yet and will not build against this version.
 
 ### Component
 
@@ -91,32 +54,53 @@ import { ImeiSerialReader, ReaderType } from 'react-native-imei-serial-reader';
 
 ### Hook (custom UI)
 
+`Camera` comes from `react-native-vision-camera` — this package does not
+re-export it.
+
 ```tsx
-import {
-  Camera,
-  useImeiSerialReader,
-  ReaderType,
-} from 'react-native-imei-serial-reader';
+import { Camera } from 'react-native-vision-camera';
+import { useImeiSerialReader, ReaderType } from 'react-native-imei-serial-reader';
 
 function Scanner() {
-  const { cameraRef, device, isActive, frameProcessor, hasPermission, reload } =
-    useImeiSerialReader({
-      parserConfig: { readerType: ReaderType.SerialNumber },
-      onDone: (values) => console.log(values),
-      captureFrame: false,
-    });
+  const {
+    cameraRef,
+    device,
+    isActive,
+    outputs,
+    hasPermission,
+    resizeMode,
+    onCameraLayout,
+    onCameraStarted,
+    onCameraError,
+  } = useImeiSerialReader({
+    parserConfig: { readerType: ReaderType.SerialNumber },
+    onDone: (values) => console.log(values),
+    captureFrame: false,
+  });
   if (!hasPermission || !device) return null;
   return (
     <Camera
       ref={cameraRef}
       device={device}
       isActive={isActive}
-      frameProcessor={frameProcessor}
+      outputs={outputs}
+      // REQUIRED. The crop rect and the overlay live in interface space;
+      // VisionCamera 5 defaults to 'device', which rotates the analysis stream
+      // when the operator tilts a portrait-locked phone.
+      orientationSource="interface"
+      resizeMode={resizeMode}
+      onLayout={(e) =>
+        onCameraLayout(e.nativeEvent.layout.width, e.nativeEvent.layout.height)
+      }
+      onStarted={onCameraStarted}
+      onError={onCameraError}
       style={{ flex: 1 }}
     />
   );
 }
 ```
+
+`useImeiSerialReader` returns `{ cameraRef, isActive, reload, error, device, outputs, bufferSize, hasPermission, requestPermission, onCameraLayout, onCameraStarted, onCameraError, resizeMode }` — pass `outputs` to `<Camera outputs>` (there is no `frameProcessor` or `format` anymore; VisionCamera 5's Nitro `CameraOutput` replaces both).
 
 ## Reader types
 
@@ -263,27 +247,71 @@ is active, not the sensor frame.
 
 ## Frame capture
 
-When `captureFrame: true`, the *exact* frame that produced the OCR match is
-JPEG-encoded natively (by the bundled `frameToJpeg` plugin) and written to a
-temp file. `onDone` receives the JPEG `Frame` as the second argument. No
-`takePhoto()` is involved — no shutter sound, no frame mismatch.
+When `captureFrame: true`, the native `OcrRecognizer` JPEG-encodes the exact
+frame it just ran OCR on and reports the file path as `jpegPath`. `onDone`
+receives it as a `Frame` (`{ uri, width, height, orientation }`) in the second
+argument. No `takePhoto()` is involved — no shutter sound, no frame mismatch.
 
 Files live in the platform's temp directory (`NSTemporaryDirectory()` on iOS,
 the app's cache dir on Android).
 
-A JPEG is written for *every* processed frame, not just matching ones — the
-file is the OCR input, not merely the capture artefact. The plugin deletes the
-previous frame's file before writing the next, so at most one scratch file
-exists at a time during a scan. The file handed to `onDone` is the last one
-written and is left in place; the consumer owns deletion of that one.
+A JPEG is written for *every* analysed frame while `captureFrame` is enabled,
+not just matching ones — the file is the OCR input, not merely the capture
+artefact. The native side keeps each file for a 3 s retention window and prunes
+older ones as it writes, so only the last handful of frames are on disk during
+a scan.
 
-### Capture mode switch
+**The delivered file is guaranteed to exist for at least 3 s after `onDone` and
+for as long as the recognizer stays paused; copy or consume it promptly.** (A
+match pauses the recognizer, and nothing is pruned while it is paused, so in
+practice the file survives until scanning resumes. Nothing is deleted on
+teardown either — the OS reclaims the temp directory.)
 
-The library has a fallback path that uses `Camera.takePhoto()` instead of the
-native plugin (useful for debugging on platforms where the plugin isn't
-installed yet). To switch, edit
-[`src/captureMode.ts`](src/captureMode.ts) and change `CAPTURE_MODE` to
-`'take-photo'`. Default is `'native-frame'`.
+## Migrating from 0.1.x
+
+0.2.0 is a rewrite on top of VisionCamera 5. `ImeiSerialReader`'s props, the
+`ReaderType`s, the parsers and the scan-region geometry are unchanged; the
+plumbing under them is not.
+
+**Dependencies.** Peers are now `react-native-vision-camera` ≥ 5.2 and
+`react-native-nitro-modules` ^0.37. The consuming app also needs
+`react-native-nitro-image` (VisionCamera 5 depends on it). Removed:
+`react-native-vision-camera` 4.x, `react-native-vision-camera-text-recognition`,
+`react-native-worklets-core`, the two peer-dependency patch files, and the
+worklets babel plugin — delete all of them from the app.
+
+**iOS deployment target is now 15.5** (was 13.0).
+
+**`useImeiSerialReader`'s return shape changed.** `format` and `frameProcessor`
+are gone; VisionCamera 5's Nitro `CameraOutput` replaces both:
+
+| 0.1.x | 0.2.0 |
+| ----- | ----- |
+| `format` (from `useCameraFormat`) | — resolution is negotiated from the output |
+| `frameProcessor` | `outputs` → `<Camera outputs={outputs}>` |
+| — | `bufferSize` — analysis size as displayed (portrait) |
+| `onInitialized` (app-side) | `onCameraStarted` → `<Camera onStarted>` |
+| — | `onCameraError` → `<Camera onError>` |
+
+`cameraRef`, `isActive`, `reload`, `error`, `device`, `hasPermission`,
+`requestPermission`, `onCameraLayout` and `resizeMode` are unchanged. Hook
+consumers must also pass `orientationSource="interface"` to `<Camera>` (see the
+hook example above).
+
+**`Frame.orientation` is informational and platform-specific.** It reports what
+the analysed frame's source orientation was — Android maps the sensor rotation,
+iOS reports the interface orientation — and the two will not always agree for
+the same physical pose. Do not derive a rotation from it: `frame.width`,
+`frame.height` and every box handed to the parsers are already upright.
+
+**`captureFrame` files now live in a retention window.** 0.1.x produced the JPEG
+through a separate `frameToJpeg` frame-processor plugin; the OCR output now
+writes it itself, keeps it for at least 3 s, and never prunes while the
+recognizer is paused — see [Frame capture](#frame-capture). `Frame` still has
+the same `{ uri, width, height, orientation }` shape.
+
+**The `example/` app has not been migrated** and will not build against 0.2.0.
+Validate changes by building a consuming app instead.
 
 ## Migration from Flutter
 

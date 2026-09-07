@@ -6,16 +6,13 @@ const SPACE_SRC = ' ';
 const NEWLINE_SRC = '\\n';
 
 export function makeExact(target: string): ParserFn {
-  // Target normalization runs on the JS thread (this code is outside the
-  // worklet directive), so module-level RegExps from the JS runtime are fine.
   const normalizedTarget = target.trim().toUpperCase().replace(/\s+/g, '');
 
   return function processExact(rt: RecognizedText): ParserResult | null {
-    'worklet';
     const reSpace = new RegExp(SPACE_SRC, 'g');
     const reNewline = new RegExp(NEWLINE_SRC, 'g');
     const reNonWord = new RegExp(NON_WORD_SRC);
-    // unused inside worklet but constructed for parity / future use
+    // unused, constructed for parity / future use
     void WHITESPACE_SRC;
 
     for (let bi = 0; bi < rt.blocks.length; bi++) {

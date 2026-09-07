@@ -1,8 +1,7 @@
 import type { ParserResult, RecognizedText } from './types';
 
-// String sources captured into the worklet are safe. RegExp objects are
-// constructed inside the worklet body so their prototype methods (.test/.exec)
-// are available in the worklet runtime.
+// Regex sources only; the RegExp objects are constructed inside the
+// function body below.
 const SERIAL_RE_SRC = '(?:serialnumber[:|?]*)([A-Za-z0-9]{6,})';
 const LETTER_AND_NUMBER_RE_SRC = '^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z0-9]+$';
 const SPACE_SRC = ' ';
@@ -25,12 +24,9 @@ const NEWLINE_SRC = '\\n';
  *      on the following line) using the per-line geometry the adapter now
  *      provides.
  *
- * Worklet note: runs in a worklet runtime, so all logic is inlined here on
- * purpose — the babel plugin does not reliably carry file-local helpers into
- * worklet scope.
+ * All logic is inlined in the function body on purpose. Do not factor it out.
  */
 export function processSerial(rt: RecognizedText): ParserResult | null {
-  'worklet';
   const reSerial = new RegExp(SERIAL_RE_SRC);
   const reLetterAndNumber = new RegExp(LETTER_AND_NUMBER_RE_SRC);
   const reSpace = new RegExp(SPACE_SRC, 'g');

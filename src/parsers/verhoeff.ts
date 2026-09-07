@@ -77,7 +77,6 @@ export const __tables = { D, P, INV } as const;
  * should strip grouping spaces before calling.
  */
 export function isValidVerhoeff(digits: string): boolean {
-  'worklet';
   if (digits.length === 0) return false;
 
   let c = 0;
@@ -108,7 +107,6 @@ export function isValidVerhoeff(digits: string): boolean {
  * Returns -1 on non-digit input.
  */
 export function verhoeffCheckDigit(payload: string): number {
-  'worklet';
   let c = 0;
   for (let i = 0; i < payload.length; i++) {
     const code = payload.charCodeAt(payload.length - 1 - i) - 48;
@@ -135,7 +133,6 @@ export function verhoeffCheckDigit(payload: string): number {
  * Input must already be stripped of grouping spaces.
  */
 export function isValidAadhaarNumber(digits: string): boolean {
-  'worklet';
   if (digits.length !== 12) return false;
   const first = digits.charCodeAt(0) - 48;
   if (first < 2 || first > 9) return false;

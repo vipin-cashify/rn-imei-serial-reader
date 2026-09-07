@@ -39,15 +39,12 @@ import { isValidAadhaarNumber } from './verhoeff';
  * That is why confusable repair here is aggressive and uniform: a wrong repair
  * simply fails the checksum. See verhoeff.ts.
  *
- * Worklet note: this runs in a worklet runtime. The worklets-core babel plugin
- * does NOT reliably carry file-local helpers into worklet scope, so all logic is
- * inlined in the returned function on purpose. Do not factor it out.
- * (`isValidAadhaarNumber` is a module import carrying its own 'worklet'
- * directive, which is the same arrangement the adapter uses.)
+ * All logic is inlined in the returned function on purpose. Do not factor it
+ * out.
  */
 
-// Regex sources only — RegExp objects are built inside the worklet body so
-// their prototype methods exist in the worklet VM.
+// Regex sources only — the RegExp objects are built inside the returned
+// function below.
 const DIGIT_RUN_SRC = '[0-9]+';
 const DOB_SRC = '\\b(\\d{2})[-/.](\\d{2})[-/.](\\d{4})\\b';
 const YEAR_SRC = '\\b(19\\d{2}|20\\d{2})\\b';
@@ -149,7 +146,6 @@ export function makeAadhaarCard(opts: AadhaarCardOptions): ParserFn {
   const requireAllFields = opts.requireAllFields !== false;
 
   return function processAadhaarCard(rt: RecognizedText): ParserResult | null {
-    'worklet';
     const reDigitRun = new RegExp(DIGIT_RUN_SRC, 'g');
     const reDob = new RegExp(DOB_SRC);
     const reYear = new RegExp(YEAR_SRC);

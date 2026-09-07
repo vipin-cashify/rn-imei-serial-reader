@@ -34,35 +34,6 @@ export type FrameOrientation =
   | 'landscape-left'
   | 'landscape-right';
 
-/**
- * Orientation strings accepted by `PhotoRecognizer` from
- * `react-native-vision-camera-text-recognition` (`PhotoOptions.orientation`).
- *
- * The plugin uses camelCase while our public `FrameOrientation` is kebab-case.
- * Passing our value through directly means only `'portrait'` ever matches and
- * every other orientation is silently ignored by the plugin — see
- * `toPhotoRecognizerOrientation`.
- */
-export type PhotoRecognizerOrientation =
-  | 'portrait'
-  | 'portraitUpsideDown'
-  | 'landscapeLeft'
-  | 'landscapeRight';
-
-const PHOTO_RECOGNIZER_ORIENTATION: Record<FrameOrientation, PhotoRecognizerOrientation> = {
-  portrait: 'portrait',
-  'portrait-upside-down': 'portraitUpsideDown',
-  'landscape-left': 'landscapeLeft',
-  'landscape-right': 'landscapeRight',
-};
-
-/** Maps our kebab-case `FrameOrientation` to the plugin's camelCase form. */
-export function toPhotoRecognizerOrientation(
-  orientation: FrameOrientation,
-): PhotoRecognizerOrientation {
-  return PHOTO_RECOGNIZER_ORIENTATION[orientation] ?? 'portrait';
-}
-
 export interface Frame {
   uri: string;
   width: number;
